@@ -21,6 +21,37 @@ nightcore and sped-up edits, and transcribes the rest locally with Demucs + Whis
 
 ---
 
+## Screenshots
+
+<table>
+<tr>
+<td colspan="2">
+
+**Library** — every track, its status, confidence, and which path picked it up
+<img src="docs/screenshots/dashboard.png" alt="Track list" />
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+**Online path** — LRCLIB match, measured speed ratio and offset, synced lyrics
+<img src="docs/screenshots/player.png" alt="Online match detail" />
+
+</td>
+<td width="50%">
+
+**AI path** — Whisper language, alignment score, transcribed and force-aligned lyrics
+<img src="docs/screenshots/ai-path.png" alt="AI transcription detail" />
+
+</td>
+</tr>
+</table>
+
+## Why "Rescale"
+
+A synced lyric file is a list of timestamps, and those timestamps only mean something for the exact audio they were built against. Speed up a track for a nightcore edit, slow it down, trim the intro — the words are unchanged but every timestamp now points at the wrong second. Rescale's job is exactly what the name says: measure how a track's timeline diverges from the original and stretch or compress the timestamps to fit it, whether that's a sped-up edit, a slowed one, or anything else whose timing doesn't match the source.
+
 ## How it works
 
 ```
