@@ -11,6 +11,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("scan", help="read-only library walk, upsert tracks into the DB")
     s.add_argument("--report", action="store_true", help="only print what the scanner sees, write nothing")
+    s.add_argument("--root", help="folder to scan recursively; remembered for later runs and by the web UI")
     r = sub.add_parser("run", help="process tracks (pending by default) and write .lrc sidecars")
     r.add_argument("--retry-failed", action="store_true")
     r.add_argument("--redo-review", action="store_true", help="also re-run tracks in needs-review")
@@ -24,8 +25,15 @@ def main() -> None:
     sub.add_parser("status", help="counts per status")
     v = sub.add_parser("serve", help="start the API + web UI")
     v.add_argument("--reload", action="store_true")
+    v.add_argument("--root", help="library folder to serve; remembered for later runs and by the web UI")
     a = ap.parse_args()
 
+    if getattr(a, "root", None):
+        from rescale_core import set_library_root
+        try:
+            print(f"library root: {set_library_root(a.root)}")
+        except ValueError as e:
+            ap.error(str(e))
     pipeline.setup_logging()
     if a.cmd == "scan":
         from rescale_scanner import report, scan

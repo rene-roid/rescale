@@ -109,7 +109,9 @@ uv run rescale run            # everything pending (models download on the first
 uv run rescale serve          # http://localhost:8765
 ```
 
-Set your library path in `config/default.toml` or `RESCALE_LIBRARY_ROOT=/music` before scanning.
+Point it at your music with `rescale scan --root /path/to/music` (scanned recursively, remembered
+afterwards, and editable from the box next to *rescan library* in the web UI). `config/default.toml`
+holds the default; `RESCALE_LIBRARY_ROOT=/music` overrides both.
 
 ## Commands
 

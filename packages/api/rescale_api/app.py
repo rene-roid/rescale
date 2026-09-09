@@ -8,7 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from rescale_core import PATHS, REPO_ROOT, STATUSES, Track, session
+from rescale_core import PATHS, REPO_ROOT, STATUSES, Track, library_root, session, set_library_root
 from rescale_scanner import scan
 
 from rescale_api import pipeline
@@ -53,7 +53,8 @@ def stats() -> dict:
             t = db.get(Track, cid)
             if t:
                 current = {"id": t.id, "filename": t.filename, "folder": t.folder}
-    return {"counts": pipeline.counts(), "queued": _queue.qsize(), "processing": current, "error": _worker_error["msg"]}
+    return {"counts": pipeline.counts(), "queued": _queue.qsize(), "processing": current,
+            "error": _worker_error["msg"], "root": str(library_root())}
 
 
 @app.get("/api/tracks")
@@ -111,8 +112,14 @@ def run(status: str = Query("pending", pattern="^(pending|failed|needs-review)$"
 
 
 @app.post("/api/scan")
-def rescan() -> dict:
-    return scan()
+def rescan(root: str | None = None) -> dict:
+    """Walk the library folder recursively. `root` switches which folder that is, and is remembered."""
+    if root:
+        try:
+            set_library_root(root)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+    return scan() | {"root": str(library_root())}
 
 
 app.mount("/", StaticFiles(directory=REPO_ROOT / "frontend", html=True), name="frontend")

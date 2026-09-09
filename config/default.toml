@@ -7,6 +7,7 @@ data_dir = "data/"
 
 [library]
 # READ ONLY. The only thing ever written here is a `<basename>.lrc` sidecar next to each audio file.
+# Just the default: `rescale scan --root ...` or the web UI overrides it (stored in data/config/library_root).
 root = "/home/yuuki/Music"
 extensions = [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus"]
 skip_dirs = [".mp3thumb_backup"]

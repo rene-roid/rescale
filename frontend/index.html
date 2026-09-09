@@ -122,7 +122,9 @@
   <span class="counts" id="counts"></span>
   <span id="busy">loading…</span>
   <span style="margin-left:auto"></span>
-  <button id="btn-scan" onclick="run('btn-scan', '/api/scan', 'scanning…')">rescan library</button>
+  <input id="root" placeholder="/path/to/music" size="24"
+         title="Folder scanned recursively for audio files. Changing it forgets tracks outside the new folder.">
+  <button id="btn-scan" onclick="rescan()">rescan library</button>
   <label id="embed-label" title="Write lyrics into the file's ID3 USLT tag instead of a .lrc sidecar">
     <input type="checkbox" id="embed"> embed into file
   </label>
@@ -157,6 +159,17 @@ async function run(btnId, url, busyLabel) {
   finally { btn.disabled = false; btn.textContent = orig; }
 }
 
+async function rescan() {
+  const btn = $('#btn-scan'), orig = btn.textContent, root = $('#root').value.trim();
+  btn.disabled = true; btn.textContent = 'scanning…';
+  try {
+    const r = await fetch('/api/scan' + (root ? '?root=' + encodeURIComponent(root) : ''), {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) return alert(d.detail || 'scan failed');
+    await load();
+  } finally { btn.disabled = false; btn.textContent = orig; }
+}
+
 async function load() {
   $('#busy').classList.add('on');
   const st = $('#status').value, q = $('#q').value;
@@ -164,6 +177,7 @@ async function load() {
     fetch(`/api/tracks?status=${encodeURIComponent(st)}&q=${encodeURIComponent(q)}`).then(r => r.json()),
     fetch('/api/stats').then(r => r.json())]);
   $('#busy').classList.remove('on');
+  if (document.activeElement !== $('#root')) $('#root').value = stats.root ?? '';
   tracks = list;
   processingId = stats.processing ? stats.processing.id : null;
   $('#counts').innerHTML = Object.entries(stats.counts).map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('')
@@ -223,6 +237,7 @@ async function reprocess(path) {
 
 $('#rows').addEventListener('click', e => { const tr = e.target.closest('tr'); if (tr) select(+tr.dataset.id); });
 $('#status').addEventListener('change', load);
+$('#root').addEventListener('keydown', e => { if (e.key === 'Enter') rescan(); });
 $('#q').addEventListener('input', () => { clearTimeout(window._t); window._t = setTimeout(load, 250); });
 load();
 let wasBusy = false;

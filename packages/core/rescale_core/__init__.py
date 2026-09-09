@@ -49,7 +49,22 @@ def data_dir(sub: str) -> Path:
 
 
 def library_root() -> Path:
-    return Path(config()["library"]["root"]).resolve()
+    """The folder scanned, recursively. RESCALE_LIBRARY_ROOT > root set from the UI/CLI > config file."""
+    f = data_dir("config") / "library_root"
+    root = (os.environ.get("RESCALE_LIBRARY_ROOT")
+            or (f.read_text().strip() if f.exists() else None)
+            or config()["library"]["root"])
+    return Path(root).expanduser().resolve()
+
+
+def set_library_root(root: str) -> Path:
+    """Persist the UI-chosen library folder. Raises ValueError if it is not an existing directory."""
+    p = Path(root).expanduser()
+    if not p.is_dir():
+        raise ValueError(f"not a directory: {root}")
+    p = p.resolve()
+    (data_dir("config") / "library_root").write_text(str(p))
+    return p
 
 
 def point_model_caches_at_data_dir() -> None:
