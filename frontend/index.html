@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>Rescale</title>
+<link rel="icon" href="/icon.png">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root { --bg:#111; --fg:#ddd; --mute:#888; --line:#2a2a2a; --hi:#ffd166; --ok:#6cc26c; --warn:#e0a33a; --bad:#e05a5a; --ai:#6aa9ff; }
@@ -21,7 +22,7 @@
   tr.sel { background:#222; }
   .st { display:inline-block; padding:0 6px; border-radius:3px; font-size:12px; color:#000; }
   .st.pending { background:var(--mute); } .st.matched-online { background:var(--ok); } .st.ai-transcribed { background:var(--ai); }
-  .st.needs-review { background:var(--warn); } .st.failed { background:var(--bad); }
+  .st.needs-review { background:var(--warn); } .st.failed { background:var(--bad); } .st.processing { background:var(--ai); }
   aside { border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
   aside .meta { padding:10px 12px; border-bottom:1px solid var(--line); font-size:13px; }
   aside .meta div { margin:2px 0; color:var(--mute); } aside .meta b { color:var(--fg); }
@@ -65,7 +66,7 @@
 </main>
 <script>
 const $ = s => document.querySelector(s);
-let tracks = [], sel = null, lines = [];
+let tracks = [], sel = null, lines = [], processingId = null;
 const post = (url) => fetch(url, {method: 'POST'}).then(r => r.json());
 const esc = s => (s ?? '').toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
@@ -75,10 +76,11 @@ async function load() {
     fetch(`/api/tracks?status=${encodeURIComponent(st)}&q=${encodeURIComponent(q)}`).then(r => r.json()),
     fetch('/api/stats').then(r => r.json())]);
   tracks = list;
+  processingId = stats.processing ? stats.processing.id : null;
   $('#counts').innerHTML = Object.entries(stats.counts).map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('')
-    + `<span>queued <b>${stats.queued}</b></span>` + (stats.processing ? `<span>processing <b>#${stats.processing}</b></span>` : '');
+    + `<span>queued <b>${stats.queued}</b></span>` + (stats.processing ? `<span>processing <b>${esc(stats.processing.filename)}</b></span>` : '');
   $('#rows').innerHTML = tracks.map(t => `<tr data-id="${t.id}" class="${sel && sel.id === t.id ? 'sel' : ''}">
-    <td><span class="st ${t.status}">${t.status}</span></td><td>${t.confidence ?? ''}</td><td>${t.path_used ?? ''}${t.path_pref !== 'auto' ? ' *' : ''}</td>
+    <td>${t.id === processingId ? '<span class="st processing">processing…</span>' : `<span class="st ${t.status}">${t.status}</span>`}</td><td>${t.confidence ?? ''}</td><td>${t.path_used ?? ''}${t.path_pref !== 'auto' ? ' *' : ''}</td>
     <td title="${esc(t.folder)}">${esc(t.folder)}</td><td title="${esc(t.filename)}">${esc(t.filename)}</td>
     <td title="${esc(t.parsed_title)} — ${esc(t.parsed_artist)}">${esc(t.parsed_title)}${t.is_variant ? ' ⏩' : ''}${t.is_cover ? ' 🎤' : ''}</td></tr>`).join('');
 }
@@ -90,7 +92,7 @@ async function select(id) {
   $('#meta').innerHTML = `<b>${esc(sel.filename)}</b>
     <div>tags: <b>${esc(sel.tag_title)}</b> — ${esc(sel.tag_artist)} · ${Math.round(sel.duration || 0)}s</div>
     <div>parsed: <b>${esc(sel.parsed_title)}</b> — ${esc(sel.parsed_artist || '?')} ${sel.is_variant ? '· shifted variant' : ''} ${sel.is_cover ? '· cover/remix' : ''}</div>
-    <div>status: <span class="st ${sel.status}">${sel.status}</span> via <b>${sel.path_used ?? '-'}</b> (pref ${sel.path_pref}) conf <b>${sel.confidence ?? '-'}</b></div>
+    <div>status: ${sel.id === processingId ? '<span class="st processing">processing…</span>' : `<span class="st ${sel.status}">${sel.status}</span>`} via <b>${sel.path_used ?? '-'}</b> (pref ${sel.path_pref}) conf <b>${sel.confidence ?? '-'}</b></div>
     ${info.track ? `<div>LRCLIB: <b>${esc(info.track)}</b> — ${esc(info.artist)} · orig ${info.orig_duration}s · ratio ${info.ratio}</div>` : ''}
     ${info.language ? `<div>whisper: lang <b>${info.language}</b> · align score ${info.score} · ${info.lines} lines</div>` : ''}
     ${sel.error ? `<div class="err">${esc(sel.error)}</div>` : ''}`;
@@ -130,9 +132,15 @@ $('#rows').addEventListener('click', e => { const tr = e.target.closest('tr'); i
 $('#status').addEventListener('change', load);
 $('#q').addEventListener('input', () => { clearTimeout(window._t); window._t = setTimeout(load, 250); });
 load();
-setInterval(async () => {  // keep statuses fresh while the worker runs
+let wasBusy = false;
+setInterval(async () => {  // keep statuses fresh while the worker runs, and catch the final refresh once it goes idle
   const s = await fetch('/api/stats').then(r => r.json());
-  if (s.queued || s.processing) { load(); if (sel && sel.status === 'pending') select(sel.id); }
+  const busy = !!(s.queued || s.processing);
+  if (busy || wasBusy) {
+    load();
+    if (sel && (sel.id === processingId || sel.status === 'pending')) select(sel.id);
+  }
+  wasBusy = busy;
 }, 4000);
 </script>
 </body>

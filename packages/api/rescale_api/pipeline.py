@@ -93,6 +93,7 @@ def process(track_id: int) -> Track:
         t.parsed_title, t.parsed_artist, t.is_variant, t.is_cover = p.title, p.artist, p.is_variant, p.is_cover
         path = decide(t)
         log.info("[%s] %s/%s  title=%r artist=%r variant=%s cover=%s", path, t.folder, t.filename, p.title, p.artist, p.is_variant, p.is_cover)
+        fatal = None
         try:
             result = None
             if path == "online":
@@ -111,8 +112,13 @@ def process(track_id: int) -> Track:
         except Exception as e:  # noqa: BLE001 - one bad track must not stop the batch
             log.exception("  -> failed: %s", e)
             t.status, t.error = "failed", f"{type(e).__name__}: {e}"
+            # ...but a CUDA error is not a bad track: it poisons the process, so every later track would
+            # fail the same way. Stop instead of marking the rest of the library failed.
+            fatal = e if "cuda" in str(e).lower() else None
         t.path_used = path
         db.commit()
+        if fatal:
+            raise RuntimeError(f"GPU is unusable in this process ({fatal}) - stopping. Restart and `run --retry-failed`.") from fatal
         return t
 
 

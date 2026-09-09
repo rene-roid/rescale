@@ -13,6 +13,4 @@
     <orderEntry type="module" module-name="rescale-transcriber" exported="" />
     <orderEntry type="module" module-name="rescale-scanner" exported="" />
   </component>
-  <component name="PackageRequirementsSettings" />
-  <component name="ReSTService" />
 </module>

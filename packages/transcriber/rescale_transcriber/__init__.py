@@ -5,8 +5,9 @@ before torch is imported)."""
 from __future__ import annotations
 
 import hashlib
+import logging
 import zlib
-from functools import cache
+from functools import cache, lru_cache
 from pathlib import Path
 
 from rescale_core import config, data_dir, point_model_caches_at_data_dir
@@ -25,6 +26,19 @@ def device() -> str:
 def compute_type() -> str:
     c = config()["transcriber"]["compute_type"]
     return c if c != "auto" else ("float16" if device() == "cuda" else "int8")
+
+
+def free_vram(tag: str = "") -> None:
+    """Hand torch's cached blocks back to the driver, and log what is left. Demucs (torch) and WhisperX
+    (ctranslate2) allocate from separate pools, so torch must return blocks before ctranslate2 can use them.
+    The log line is here because an OOM in ctranslate2 kills the process without saying how much was free."""
+    if device() != "cuda":
+        return
+    import torch
+    torch.cuda.empty_cache()
+    if tag:
+        free, total = torch.cuda.mem_get_info()
+        logging.getLogger("rescale").info("  vram %s: %.2fG free of %.2fG", tag, free / 2**30, total / 2**30)
 
 
 @cache
@@ -46,7 +60,23 @@ def separate_vocals(audio: Path) -> Path:
     tmp = out.with_suffix(".tmp.wav")
     save_audio(stems["vocals"], tmp, samplerate=sep.samplerate)
     tmp.rename(out)
+    del stems
+    free_vram()
     return out
+
+
+@cache
+def languages() -> list[str]:
+    """The languages actually present in the library, validated against what whisperx can align.
+    Whisper detects from the first 30 s of the vocal stem - usually an instrumental intro, which after
+    demucs is near silence - and confidently returns Javanese or Latin for an English cover."""
+    from whisperx.alignment import DEFAULT_ALIGN_MODELS_HF as HF, DEFAULT_ALIGN_MODELS_TORCH as TORCH
+    langs = config()["transcriber"]["languages"]
+    bad = [x for x in langs if x not in HF and x not in TORCH]
+    if bad:
+        raise ValueError(f"transcriber.languages: whisperx has no alignment model for {bad}; "
+                         f"pick from {sorted(set(HF) | set(TORCH))}")
+    return langs
 
 
 @cache
@@ -57,7 +87,7 @@ def _whisper():
                                download_root=str(data_dir("models/whisper")))
 
 
-@cache
+@lru_cache(maxsize=1)  # one language at a time: a mixed library would otherwise pin a wav2vec2 per language
 def _aligner(language: str):
     import whisperx
     return whisperx.load_align_model(language, device(), model_dir=str(data_dir("models/hf")))
@@ -68,8 +98,16 @@ def raw_transcribe(vocals: Path) -> dict:
     """Whisper only, no alignment: {'language': 'en', 'segments': [{start, end, text}]}. Cached per stem
     because the online-verification step and the AI path both need it."""
     import whisperx
+    free_vram("before whisper")
+    langs, batch = languages(), config()["transcriber"]["batch_size"]
     audio = whisperx.load_audio(str(vocals))
-    result = _whisper().transcribe(audio, batch_size=config()["transcriber"]["batch_size"])
+    # One language configured -> skip detection entirely (whisperx warns it costs inference time).
+    result = _whisper().transcribe(audio, batch_size=batch, language=langs[0] if len(langs) == 1 else None)
+    if result["language"] not in langs:
+        # Misdetected: the text was decoded in the wrong language too, so redo it rather than just relabel.
+        logging.getLogger("rescale").info("  detected %r, not in %s - re-transcribing as %r",
+                                          result["language"], langs, langs[0])
+        result = _whisper().transcribe(audio, batch_size=batch, language=langs[0])
     return {"language": result["language"], "segments": [{k: s[k] for k in ("start", "end", "text")} for s in result["segments"]]}
 
 
@@ -80,7 +118,9 @@ def transcribe(vocals: Path) -> dict:
     raw = raw_transcribe(vocals)
     audio = whisperx.load_audio(str(vocals))
     model, meta = _aligner(raw["language"])
+    free_vram()  # only now is a swapped-out language's model unreferenced, so only now can its blocks go back
     aligned = whisperx.align(raw["segments"], model, meta, audio, device())
+    free_vram()
     return {"language": raw["language"], "segments": aligned["segments"]}
 
 

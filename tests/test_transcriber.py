@@ -1,3 +1,4 @@
+import pytest
 from rescale_transcriber import hallucinated, mean_score, to_lines
 
 
@@ -32,3 +33,15 @@ def test_splits_on_capitalised_lyric_lines():
     text = "Baby, I'm wasted All I wanna do is drive home to you Baby, I'm faded"
     seg = {"start": 0, "end": 9, "text": text, "words": [w(x, i * 0.5, i * 0.5 + 0.3) for i, x in enumerate(text.split())]}
     assert [t for _, t in to_lines([seg], max_words=50)] == ["Baby, I'm wasted", "All I wanna do is drive home to you", "Baby, I'm faded"]
+
+
+def test_languages_rejects_codes_whisperx_cannot_align(monkeypatch):
+    import rescale_transcriber as rt
+    cfg = {"transcriber": {"languages": ["en", "jw"]}}
+    monkeypatch.setattr(rt, "config", lambda: cfg)
+    rt.languages.cache_clear()
+    with pytest.raises(ValueError, match="jw"):  # whisper detects Javanese on English covers; fail at config, not mid-run
+        rt.languages()
+    cfg["transcriber"]["languages"] = ["en", "ja"]
+    rt.languages.cache_clear()
+    assert rt.languages() == ["en", "ja"]

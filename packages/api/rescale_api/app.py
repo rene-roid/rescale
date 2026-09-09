@@ -17,6 +17,7 @@ app = FastAPI(title="Rescale")
 # ponytail: one worker thread, one GPU, in-memory queue. Lost on restart; pending rows are re-queued by /api/run.
 _queue: queue.Queue[int] = queue.Queue()
 _current: dict = {"id": None}
+_worker_error: dict = {"msg": None}
 
 
 def _worker() -> None:
@@ -25,6 +26,13 @@ def _worker() -> None:
         _current["id"] = i
         try:
             pipeline.process(i)
+        except Exception:  # process() only re-raises for a dead GPU; every queued track would fail too
+            pipeline.log.exception("worker stopped; restart the server to process the rest")
+            _worker_error["msg"] = "GPU error - restart the server, then re-run the failed tracks"
+            while not _queue.empty():
+                _queue.get_nowait()
+                _queue.task_done()
+            return
         finally:
             _current["id"] = None
             _queue.task_done()
@@ -38,7 +46,14 @@ def _start() -> None:
 
 @app.get("/api/stats")
 def stats() -> dict:
-    return {"counts": pipeline.counts(), "queued": _queue.qsize(), "processing": _current["id"]}
+    current = None
+    cid = _current["id"]
+    if cid is not None:
+        with session() as db:
+            t = db.get(Track, cid)
+            if t:
+                current = {"id": t.id, "filename": t.filename, "folder": t.folder}
+    return {"counts": pipeline.counts(), "queued": _queue.qsize(), "processing": current, "error": _worker_error["msg"]}
 
 
 @app.get("/api/tracks")
