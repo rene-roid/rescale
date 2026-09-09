@@ -45,3 +45,15 @@ def test_languages_rejects_codes_whisperx_cannot_align(monkeypatch):
     cfg["transcriber"]["languages"] = ["en", "ja"]
     rt.languages.cache_clear()
     assert rt.languages() == ["en", "ja"]
+
+
+def test_loudest_window_picks_the_vocals_not_the_intro():
+    import numpy as np
+    from rescale_transcriber import loudest_window
+    sr = 100  # small fake sample rate keeps the test instant
+    audio = np.zeros(120 * sr, dtype=np.float32)
+    audio[50 * sr : 70 * sr] = 0.5  # 20 s of "singing" starting at 0:50 after a silent intro
+    w = loudest_window(audio, sr=sr, secs=30)
+    assert len(w) == 30 * sr and w.mean() > 0.3
+    short = audio[: 10 * sr]
+    assert loudest_window(short, sr=sr, secs=30) is short  # shorter than the window -> unchanged

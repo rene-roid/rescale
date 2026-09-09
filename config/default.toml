@@ -34,9 +34,9 @@ compute_type = "auto"      # auto -> float16 on cuda, int8 on cpu.
                            # Measured on a 12 GB card: large-v3 costs 3.59G at float16, 1.83G at int8_float16.
                            # Set "int8_float16" to buy ~1.8G of headroom for a small accuracy cost.
 batch_size = 8            # VRAM knob: whisper batches share the card with demucs. 12 GB -> 8; drop to 4 if it still OOMs.
-# Languages your library actually contains. Whisper detects per track from the first 30 s of the vocal
-# stem - often an instrumental intro - and misdetects English covers as Javanese, Latin or Nynorsk; a
-# detection outside this list is re-transcribed as the first entry. One entry skips detection entirely.
+# Languages your library actually contains. Detection runs on the loudest 30 s of the vocal stem (the
+# first 30 s is usually an instrumental intro, misdetected as Javanese or Khmer); a detection outside
+# this list falls back to the first entry. One entry skips detection entirely.
 languages = ["en", "ja"]
 demucs_model = "htdemucs"
 # Mean word alignment score below this -> needs-review instead of ai-transcribed.

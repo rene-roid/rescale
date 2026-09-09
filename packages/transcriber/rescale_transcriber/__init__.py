@@ -7,7 +7,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import zlib
-from functools import cache, lru_cache
+from functools import cache
 from pathlib import Path
 
 from rescale_core import config, data_dir, point_model_caches_at_data_dir
@@ -87,10 +87,23 @@ def _whisper():
                                download_root=str(data_dir("models/whisper")))
 
 
-@lru_cache(maxsize=1)  # one language at a time: a mixed library would otherwise pin a wav2vec2 per language
+@cache  # bounded by transcriber.languages; evicting and reloading between tracks fragments VRAM instead
 def _aligner(language: str):
     import whisperx
     return whisperx.load_align_model(language, device(), model_dir=str(data_dir("models/hf")))
+
+
+def loudest_window(audio, sr: int = 16000, secs: int = 30):
+    """The `secs`-second slice with the most energy. Whisper detects language on the first 30 s, and on a
+    vocal stem that is the instrumental intro: near silence after demucs, detected as Javanese or Khmer."""
+    import numpy as np
+    n = len(audio) // sr
+    if n <= secs:
+        return audio
+    energy = np.square(audio[: n * sr].reshape(n, sr)).mean(axis=1)
+    csum = np.concatenate([[0.0], np.cumsum(energy)])
+    i = int(np.argmax(csum[secs:] - csum[:-secs]))
+    return audio[i * sr : (i + secs) * sr]
 
 
 @cache
@@ -98,16 +111,17 @@ def raw_transcribe(vocals: Path) -> dict:
     """Whisper only, no alignment: {'language': 'en', 'segments': [{start, end, text}]}. Cached per stem
     because the online-verification step and the AI path both need it."""
     import whisperx
+    log = logging.getLogger("rescale")
     free_vram("before whisper")
     langs, batch = languages(), config()["transcriber"]["batch_size"]
     audio = whisperx.load_audio(str(vocals))
-    # One language configured -> skip detection entirely (whisperx warns it costs inference time).
-    result = _whisper().transcribe(audio, batch_size=batch, language=langs[0] if len(langs) == 1 else None)
-    if result["language"] not in langs:
-        # Misdetected: the text was decoded in the wrong language too, so redo it rather than just relabel.
-        logging.getLogger("rescale").info("  detected %r, not in %s - re-transcribing as %r",
-                                          result["language"], langs, langs[0])
-        result = _whisper().transcribe(audio, batch_size=batch, language=langs[0])
+    lang = langs[0] if len(langs) == 1 else _whisper().detect_language(loudest_window(audio))
+    if lang not in langs:
+        log.info("  detected %r, not in %s - transcribing as %r", lang, langs, langs[0])
+        lang = langs[0]
+    # Language is always forced: decoding in a misdetected language does not hit end-of-text on noise,
+    # runs every segment to the token cap, and the decoder cache OOMs the card.
+    result = _whisper().transcribe(audio, batch_size=batch, language=lang)
     return {"language": result["language"], "segments": [{k: s[k] for k in ("start", "end", "text")} for s in result["segments"]]}
 
 
@@ -118,7 +132,6 @@ def transcribe(vocals: Path) -> dict:
     raw = raw_transcribe(vocals)
     audio = whisperx.load_audio(str(vocals))
     model, meta = _aligner(raw["language"])
-    free_vram()  # only now is a swapped-out language's model unreferenced, so only now can its blocks go back
     aligned = whisperx.align(raw["segments"], model, meta, audio, device())
     free_vram()
     return {"language": raw["language"], "segments": aligned["segments"]}
