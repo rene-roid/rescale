@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rescale</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#111; --fg:#ddd; --mute:#888; --line:#2a2a2a; --hi:#ffd166; --ok:#6cc26c; --warn:#e0a33a; --bad:#e05a5a; --ai:#6aa9ff; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 14px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); display:grid; grid-template-rows:auto 1fr; height:100vh; }
+  header { display:flex; gap:12px; align-items:center; padding:8px 12px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:18px; margin:0 8px 0 0; }
+  header .counts span { margin-right:10px; color:var(--mute); }
+  header .counts b { color:var(--fg); }
+  main { display:grid; grid-template-columns: minmax(0,1fr) 420px; min-height:0; }
+  #list { overflow:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:4px 8px; border-bottom:1px solid var(--line); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:0; }
+  th { position:sticky; top:0; background:var(--bg); color:var(--mute); font-weight:normal; }
+  tr:hover { background:#1a1a1a; cursor:pointer; }
+  tr.sel { background:#222; }
+  .st { display:inline-block; padding:0 6px; border-radius:3px; font-size:12px; color:#000; }
+  .st.pending { background:var(--mute); } .st.matched-online { background:var(--ok); } .st.ai-transcribed { background:var(--ai); }
+  .st.needs-review { background:var(--warn); } .st.failed { background:var(--bad); }
+  aside { border-left:1px solid var(--line); display:flex; flex-direction:column; min-height:0; }
+  aside .meta { padding:10px 12px; border-bottom:1px solid var(--line); font-size:13px; }
+  aside .meta div { margin:2px 0; color:var(--mute); } aside .meta b { color:var(--fg); }
+  aside .actions { padding:8px 12px; display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  audio { width:100%; }
+  button, select, input { background:#222; color:var(--fg); border:1px solid #444; border-radius:4px; padding:4px 8px; font:inherit; }
+  button:hover { background:#333; }
+  #lyrics { overflow:auto; padding:12px; flex:1; }
+  #lyrics p { margin:0; padding:3px 6px; color:var(--mute); border-radius:3px; cursor:pointer; }
+  #lyrics p.on { color:var(--hi); background:#1e1a0e; }
+  #lyrics p small { color:#555; margin-right:8px; font-variant-numeric:tabular-nums; }
+  .err { color:var(--bad); white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rescale</h1>
+  <select id="status">
+    <option value="">all statuses</option>
+    <option>pending</option><option>matched-online</option><option>ai-transcribed</option><option>needs-review</option><option>failed</option>
+  </select>
+  <input id="q" placeholder="filter by path…" size="28">
+  <span class="counts" id="counts"></span>
+  <span style="margin-left:auto"></span>
+  <button onclick="post('/api/scan').then(load)">rescan library</button>
+  <button onclick="post('/api/run?status=pending').then(load)">run pending</button>
+  <button onclick="post('/api/run?status=failed').then(load)">retry failed</button>
+</header>
+<main>
+  <div id="list"><table><thead><tr><th style="width:110px">status</th><th style="width:60px">conf</th><th style="width:50px">path</th><th>folder</th><th style="width:45%">file</th><th style="width:170px">parsed</th></tr></thead><tbody id="rows"></tbody></table></div>
+  <aside>
+    <div class="meta" id="meta">Select a track.</div>
+    <div class="actions" id="actions" hidden>
+      <button onclick="reprocess('auto')">reprocess (auto)</button>
+      <button onclick="reprocess('online')">use online lookup</button>
+      <button onclick="reprocess('ai')">use AI transcription</button>
+    </div>
+    <div style="padding:8px 12px"><audio id="player" controls preload="none"></audio></div>
+    <div id="lyrics"></div>
+  </aside>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let tracks = [], sel = null, lines = [];
+const post = (url) => fetch(url, {method: 'POST'}).then(r => r.json());
+const esc = s => (s ?? '').toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+async function load() {
+  const st = $('#status').value, q = $('#q').value;
+  const [list, stats] = await Promise.all([
+    fetch(`/api/tracks?status=${encodeURIComponent(st)}&q=${encodeURIComponent(q)}`).then(r => r.json()),
+    fetch('/api/stats').then(r => r.json())]);
+  tracks = list;
+  $('#counts').innerHTML = Object.entries(stats.counts).map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('')
+    + `<span>queued <b>${stats.queued}</b></span>` + (stats.processing ? `<span>processing <b>#${stats.processing}</b></span>` : '');
+  $('#rows').innerHTML = tracks.map(t => `<tr data-id="${t.id}" class="${sel && sel.id === t.id ? 'sel' : ''}">
+    <td><span class="st ${t.status}">${t.status}</span></td><td>${t.confidence ?? ''}</td><td>${t.path_used ?? ''}${t.path_pref !== 'auto' ? ' *' : ''}</td>
+    <td title="${esc(t.folder)}">${esc(t.folder)}</td><td title="${esc(t.filename)}">${esc(t.filename)}</td>
+    <td title="${esc(t.parsed_title)} — ${esc(t.parsed_artist)}">${esc(t.parsed_title)}${t.is_variant ? ' ⏩' : ''}${t.is_cover ? ' 🎤' : ''}</td></tr>`).join('');
+}
+
+async function select(id) {
+  sel = await fetch(`/api/tracks/${id}`).then(r => r.json());
+  document.querySelectorAll('#rows tr').forEach(tr => tr.classList.toggle('sel', +tr.dataset.id === id));
+  const info = sel.match_info ? JSON.parse(sel.match_info) : {};
+  $('#meta').innerHTML = `<b>${esc(sel.filename)}</b>
+    <div>tags: <b>${esc(sel.tag_title)}</b> — ${esc(sel.tag_artist)} · ${Math.round(sel.duration || 0)}s</div>
+    <div>parsed: <b>${esc(sel.parsed_title)}</b> — ${esc(sel.parsed_artist || '?')} ${sel.is_variant ? '· shifted variant' : ''} ${sel.is_cover ? '· cover/remix' : ''}</div>
+    <div>status: <span class="st ${sel.status}">${sel.status}</span> via <b>${sel.path_used ?? '-'}</b> (pref ${sel.path_pref}) conf <b>${sel.confidence ?? '-'}</b></div>
+    ${info.track ? `<div>LRCLIB: <b>${esc(info.track)}</b> — ${esc(info.artist)} · orig ${info.orig_duration}s · ratio ${info.ratio}</div>` : ''}
+    ${info.language ? `<div>whisper: lang <b>${info.language}</b> · align score ${info.score} · ${info.lines} lines</div>` : ''}
+    ${sel.error ? `<div class="err">${esc(sel.error)}</div>` : ''}`;
+  $('#actions').hidden = false;
+  const p = $('#player'); p.src = `/api/tracks/${id}/audio`; p.load();
+  lines = [];
+  for (const line of (sel.lyrics || '').split('\n')) {
+    const m = line.match(/^\[(\d+):(\d+(?:\.\d+)?)\](.*)$/);
+    if (m) lines.push({t: +m[1] * 60 + +m[2], text: m[3]});
+  }
+  $('#lyrics').innerHTML = lines.length
+    ? lines.map((l, i) => `<p data-i="${i}" onclick="seek(${l.t})"><small>${fmt(l.t)}</small>${esc(l.text)}</p>`).join('')
+    : '<p>No lyrics yet.</p>';
+}
+
+const fmt = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}`;
+const seek = t => { const p = $('#player'); p.currentTime = t; p.play(); };
+
+$('#player').addEventListener('timeupdate', e => {
+  const t = e.target.currentTime;
+  let cur = -1;
+  for (let i = 0; i < lines.length && lines[i].t <= t; i++) cur = i;
+  document.querySelectorAll('#lyrics p').forEach(p => {
+    const on = +p.dataset.i === cur;
+    if (on && !p.classList.contains('on')) p.scrollIntoView({block: 'center', behavior: 'smooth'});
+    p.classList.toggle('on', on);
+  });
+});
+
+async function reprocess(path) {
+  if (!sel) return;
+  await post(`/api/tracks/${sel.id}/reprocess?path=${path}`);
+  load();
+}
+
+$('#rows').addEventListener('click', e => { const tr = e.target.closest('tr'); if (tr) select(+tr.dataset.id); });
+$('#status').addEventListener('change', load);
+$('#q').addEventListener('input', () => { clearTimeout(window._t); window._t = setTimeout(load, 250); });
+load();
+setInterval(async () => {  // keep statuses fresh while the worker runs
+  const s = await fetch('/api/stats').then(r => r.json());
+  if (s.queued || s.processing) { load(); if (sel && sel.status === 'pending') select(sel.id); }
+}, 4000);
+</script>
+</body>
+</html>

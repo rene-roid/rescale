@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale.iml" filepath="$PROJECT_DIR$/.idea/rescale.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-api.iml" filepath="$PROJECT_DIR$/.idea/rescale-api.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-core.iml" filepath="$PROJECT_DIR$/.idea/rescale-core.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-matcher.iml" filepath="$PROJECT_DIR$/.idea/rescale-matcher.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-rescaler.iml" filepath="$PROJECT_DIR$/.idea/rescale-rescaler.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-scanner.iml" filepath="$PROJECT_DIR$/.idea/rescale-scanner.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-transcriber.iml" filepath="$PROJECT_DIR$/.idea/rescale-transcriber.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-writer.iml" filepath="$PROJECT_DIR$/.idea/rescale-writer.iml" />
+    </modules>
+  </component>
+</project>

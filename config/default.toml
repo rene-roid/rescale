@@ -1,0 +1,41 @@
+# Rescale configuration. Every value can be overridden with an env var:
+#   RESCALE_<SECTION>_<KEY>, e.g. RESCALE_LIBRARY_ROOT=/music  RESCALE_TRANSCRIBER_DEVICE=cpu
+
+[paths]
+# All generated data (db, caches, model weights, stems, logs). Relative paths resolve from the repo root.
+data_dir = "data/"
+
+[library]
+# READ ONLY. The only thing ever written here is a `<basename>.lrc` sidecar next to each audio file.
+root = "/home/yuuki/Music"
+extensions = [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus"]
+skip_dirs = [".mp3thumb_backup"]
+
+[matcher]
+# Online (LRCLIB) match confidence: >= accept -> matched-online; >= review -> needs-review; else AI path.
+accept = 0.85
+review = 0.65
+# Words in filename/tags that mark a tempo/pitch-shifted variant (timestamps get rescaled).
+variant_words = ["nightcore", "sped up", "speed up", "spedup", "slowed", "daycore", "8d", "boosted"]
+# Words that mark a re-recording where the original's lyrics would be wrong (always AI path).
+cover_words = ["cover", "remix", "swing arrangement", "switching vocals", "rock version"]
+# Verify every online candidate against a quick Whisper transcript of the vocal stem, and measure the
+# time mapping (speed + trim) from it instead of trusting the duration ratio. Costs ~10 s/track on a GPU;
+# turn off on a CPU-only box to keep the online path instant (then variants use the duration ratio).
+verify = true
+min_lyric_sim = 0.25
+# Which path shifted variants prefer when no explicit per-track preference is set: "online" (fetch + rescale) or "ai".
+variant_default_path = "online"
+
+[transcriber]
+device = "auto"            # auto | cuda | cpu
+whisper_model = "large-v3"  # any faster-whisper model name
+compute_type = "auto"      # auto -> float16 on cuda, int8 on cpu
+batch_size = 16
+demucs_model = "htdemucs"
+# Mean word alignment score below this -> needs-review instead of ai-transcribed.
+review_below = 0.55
+
+[api]
+host = "0.0.0.0"
+port = 8765
