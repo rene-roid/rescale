@@ -47,9 +47,10 @@
   <input id="q" placeholder="filter by path…" size="28">
   <span class="counts" id="counts"></span>
   <span style="margin-left:auto"></span>
+  <label style="display:flex;align-items:center;gap:4px;color:var(--mute)"><input type="checkbox" id="embed"> embed into file (Navidrome)</label>
   <button onclick="post('/api/scan').then(load)">rescan library</button>
-  <button onclick="post('/api/run?status=pending').then(load)">run pending</button>
-  <button onclick="post('/api/run?status=failed').then(load)">retry failed</button>
+  <button onclick="post('/api/run?status=pending' + embedParam()).then(load)">run pending</button>
+  <button onclick="post('/api/run?status=failed' + embedParam()).then(load)">retry failed</button>
 </header>
 <main>
   <div id="list"><table><thead><tr><th style="width:110px">status</th><th style="width:60px">conf</th><th style="width:50px">path</th><th>folder</th><th style="width:45%">file</th><th style="width:170px">parsed</th></tr></thead><tbody id="rows"></tbody></table></div>
@@ -68,6 +69,7 @@
 const $ = s => document.querySelector(s);
 let tracks = [], sel = null, lines = [], processingId = null;
 const post = (url) => fetch(url, {method: 'POST'}).then(r => r.json());
+const embedParam = () => '&embed=' + $('#embed').checked;
 const esc = s => (s ?? '').toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
 async function load() {
@@ -124,7 +126,7 @@ $('#player').addEventListener('timeupdate', e => {
 
 async function reprocess(path) {
   if (!sel) return;
-  await post(`/api/tracks/${sel.id}/reprocess?path=${path}`);
+  await post(`/api/tracks/${sel.id}/reprocess?path=${path}` + embedParam());
   load();
 }
 

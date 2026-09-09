@@ -15,17 +15,17 @@ from rescale_api import pipeline
 
 app = FastAPI(title="Rescale")
 # ponytail: one worker thread, one GPU, in-memory queue. Lost on restart; pending rows are re-queued by /api/run.
-_queue: queue.Queue[int] = queue.Queue()
+_queue: queue.Queue[tuple[int, bool | None]] = queue.Queue()
 _current: dict = {"id": None}
 _worker_error: dict = {"msg": None}
 
 
 def _worker() -> None:
     while True:
-        i = _queue.get()
+        i, embed = _queue.get()
         _current["id"] = i
         try:
-            pipeline.process(i)
+            pipeline.process(i, embed=embed)
         except Exception:  # process() only re-raises for a dead GPU; every queued track would fail too
             pipeline.log.exception("worker stopped; restart the server to process the rest")
             _worker_error["msg"] = "GPU error - restart the server, then re-run the failed tracks"
@@ -91,22 +91,22 @@ def audio(i: int) -> FileResponse:
 
 
 @app.post("/api/tracks/{i}/reprocess")
-def reprocess(i: int, path: str = Query("auto", pattern="^(auto|online|ai)$")) -> dict:
+def reprocess(i: int, path: str = Query("auto", pattern="^(auto|online|ai)$"), embed: bool | None = None) -> dict:
     with session() as db:
         t = db.get(Track, i)
         if not t:
             raise HTTPException(404)
         t.path_pref, t.status, t.error = path, "pending", None
         db.commit()
-    _queue.put(i)
-    return {"queued": i, "path": path}
+    _queue.put((i, embed))
+    return {"queued": i, "path": path, "embed": embed}
 
 
 @app.post("/api/run")
-def run(status: str = Query("pending", pattern="^(pending|failed|needs-review)$")) -> dict:
+def run(status: str = Query("pending", pattern="^(pending|failed|needs-review)$"), embed: bool | None = None) -> dict:
     ids = pipeline.select_ids([status])
     for i in ids:
-        _queue.put(i)
+        _queue.put((i, embed))
     return {"queued": len(ids)}
 
 

@@ -42,6 +42,11 @@ demucs_model = "htdemucs"
 # Mean word alignment score below this -> needs-review instead of ai-transcribed.
 review_below = 0.55
 
+[writer]
+# Instead of a `<basename>.lrc` sidecar, embed lyrics into an ID3 USLT frame on the audio file itself
+# (what Navidrome reads). Only mp3/wav support this; other formats still get the .lrc sidecar.
+embed = false
+
 [api]
 host = "0.0.0.0"
 port = 8765

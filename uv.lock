@@ -1711,6 +1711,12 @@ requires-dist = [
 name = "rescale-writer"
 version = "0.1.0"
 source = { editable = "packages/writer" }
+dependencies = [
+    { name = "mutagen" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "mutagen", specifier = ">=1.47" }]
 
 [[package]]
 name = "retrying"

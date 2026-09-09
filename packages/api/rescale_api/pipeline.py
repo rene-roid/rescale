@@ -9,7 +9,7 @@ from pathlib import Path
 from rescale_core import Track, config, data_dir, session
 from rescale_matcher import candidates, lyric_similarity, parse
 from rescale_rescaler import build, fit, lines, rescale
-from rescale_writer import write_lrc
+from rescale_writer import can_embed, embed_lyrics, write_lrc
 
 log = logging.getLogger("rescale")
 
@@ -86,7 +86,17 @@ def run_ai(t: Track, p) -> tuple[str, str, float, dict]:
     return lrc, status, info["score"], info
 
 
-def process(track_id: int) -> Track:
+def write_lyrics(audio: Path, lrc: str, embed: bool) -> Path:
+    """Embed into the audio file's USLT tag (Navidrome-friendly) if asked and the format supports it,
+    else fall back to a .lrc sidecar."""
+    if embed and can_embed(audio):
+        return embed_lyrics(audio, lrc)
+    return write_lrc(audio, lrc)
+
+
+def process(track_id: int, embed: bool | None = None) -> Track:
+    if embed is None:
+        embed = config()["writer"]["embed"]
     with session() as db:
         t = db.get(Track, track_id)
         p = parse(t.tag_title, t.filename, t.tag_artist, t.folder)
@@ -105,7 +115,7 @@ def process(track_id: int) -> Track:
             if result is None:
                 raise LookupError("no online lyrics match (path preference is online-only)")
             lrc, status, conf, info = result
-            write_lrc(Path(t.path), lrc)
+            write_lyrics(Path(t.path), lrc, embed)
             t.lyrics, t.status, t.confidence, t.match_info, t.error = lrc, status, conf, json.dumps(info), None
             t.lrc_written_at = datetime.now(timezone.utc)
             log.info("  -> %s conf=%s %s", status, conf, info)
