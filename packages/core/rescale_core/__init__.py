@@ -16,7 +16,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-STATUSES = ("pending", "matched-online", "ai-transcribed", "needs-review", "failed")
+# has-lyrics: the file already carried synced lyrics when it was scanned, so there is nothing to do.
+STATUSES = ("pending", "has-lyrics", "matched-online", "ai-transcribed", "needs-review", "failed")
 PATHS = ("auto", "online", "ai")
 SCHEME = "sftp://"
 

@@ -1,12 +1,14 @@
 """Read-only library walk + tag extraction. Only ever opens files for reading."""
 from __future__ import annotations
 
+import json
 import os
 import threading
 from pathlib import Path
 
 import mutagen
 from rescale_core import Library, Track, config, libraries, library_root, session
+from rescale_writer import MARK, existing_lyrics
 from rescale_scanner.remote import SCHEME, scan_remote  # noqa: F401 - re-exported for the API
 
 # One scan at a time: the background poller and a manual rescan would otherwise fight over the same rows.
@@ -30,6 +32,20 @@ def probe(path: Path) -> dict:
         for k in ("title", "artist", "album"):
             info[f"tag_{k}"] = _tag(m.tags, k)
     return info
+
+
+def adopt(t: Track, found: tuple[str, str] | None) -> None:
+    """Decide what a newly seen (or changed) file is: work to do, or lyrics that are already there.
+
+    Adopting on change as well as on first sight is deliberate - anything that moves an mtime
+    (a restore, an rsync, a re-tag) would otherwise re-run hours of GPU work on a whole library."""
+    t.confidence, t.path_used, t.error = None, None, None
+    if found is None:
+        t.status, t.lyrics, t.match_info = "pending", None, None
+        return
+    lrc, source = found
+    t.status, t.lyrics = "has-lyrics", lrc
+    t.match_info = json.dumps({"source": source, "by_rescale": MARK in lrc})
 
 
 def default_library() -> Library:
@@ -60,7 +76,7 @@ def scan(lib: Library | None = None, dry_run: bool = False) -> dict:
 
 def _scan_local(lib: Library, dry_run: bool) -> dict:
     root, files = Path(lib.root), walk(lib)
-    stats = {"files": len(files), "new": 0, "changed": 0, "unchanged": 0, "missing": 0}
+    stats = {"files": len(files), "new": 0, "changed": 0, "unchanged": 0, "missing": 0, "with_lyrics": 0}
     with session() as db:
         known = {t.path: t for t in db.query(Track).filter(Track.path.startswith(lib.prefix, autoescape=True)).all()}
         for p in files:
@@ -77,7 +93,8 @@ def _scan_local(lib: Library, dry_run: bool) -> dict:
                 stats["new"] += 1
             else:
                 stats["changed"] += 1
-                t.status, t.lyrics, t.error = "pending", None, None
+            adopt(t, existing_lyrics(p))
+            stats["with_lyrics"] += t.status == "has-lyrics"
             for k, v in info.items():
                 setattr(t, k, v)
         for t in known.values():  # file gone from disk
@@ -96,12 +113,14 @@ def report() -> str:
     files = walk()
     ext = collections.Counter(p.suffix.lower() for p in files)
     folders = collections.Counter(p.parent.name for p in files)
-    no_title = 0
+    no_title = have = 0
     samples = []
     for p in files:
         info = probe(p)
         no_title += not info["tag_title"]
+        have += existing_lyrics(p) is not None
         if len(samples) < 15 and (len(samples) % 3 == 0 or info["tag_title"]):
             samples.append(f"  {p.parent.name} | {p.name} | title={info['tag_title']!r} artist={info['tag_artist']!r} dur={info['duration'] and round(info['duration'])}")
     return "\n".join([f"{len(files)} audio files", f"extensions: {dict(ext)}", f"folders: {dict(folders)}",
-                      f"without a title tag: {no_title}", "samples:", *samples])
+                      f"without a title tag: {no_title}", f"already have synced lyrics: {have}",
+                      "samples:", *samples])

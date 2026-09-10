@@ -1843,6 +1843,7 @@ dependencies = [
     { name = "mutagen" },
     { name = "paramiko" },
     { name = "rescale-core" },
+    { name = "rescale-writer" },
 ]
 
 [package.metadata]
@@ -1851,6 +1852,7 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47" },
     { name = "paramiko", specifier = ">=5.0.0" },
     { name = "rescale-core", editable = "packages/core" },
+    { name = "rescale-writer", editable = "packages/writer" },
 ]
 
 [[package]]

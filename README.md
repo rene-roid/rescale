@@ -82,6 +82,7 @@ fit — all of it falls through to the AI path instead of writing garbage.
 - 🧠 **Local transcription** — Demucs `htdemucs` + WhisperX `large-v3` with word-level forced alignment, no API keys, nothing leaves the box
 - 🔍 **Filename parsing** — strips `(Lyrics)`, `[Official Video]`, uploader suffixes and the rest of the YouTube-rip noise
 - 📊 **Confidence gating** — low-confidence results land in `needs-review` instead of silently shipping wrong lyrics
+- ⏭ **Nothing done twice** — a scan notices tracks that already carry synced lyrics, from an earlier run or from the source, and leaves them alone
 - 🖥 **Web UI** — browse by status, filter by path, play a track with its lyrics highlighting live, click a line to seek, reprocess in one click
 - 🌐 **Remote libraries** — point it at `sftp://user@host/music` and it processes a NAS or Navidrome box over the network, pushing the lyrics back
 - 🔒 **Read-only library** — the *only* thing ever written into your music tree is the `.lrc` sidecar, atomically
@@ -142,6 +143,13 @@ uv run pytest
 **Statuses:** `pending` → `matched-online` | `ai-transcribed` | `needs-review` (written, but below
 the accept threshold, or the transcript only half-agreed with it) | `failed`. Re-runs skip everything
 that isn't pending.
+
+`has-lyrics` is the sixth: the file already had synced lyrics when it was scanned, so there is nothing
+to do. Scanning checks the file's lyrics tag and any `.lrc` beside it, and adopts what it finds —
+whether Rescale wrote it on an earlier run (the `[re:Rescale]` stamp says which) or the file came with
+it. Unsynced lyrics don't count: a plain lyric dump is what Rescale exists to replace. This is what
+stops a cleared database, a restored backup or an rsync from putting a whole library back through the
+GPU; to redo one anyway, use *reprocess* on the track.
 
 **Where the lyrics go:** into the audio file's own lyrics tag by default — `USLT` for mp3/wav, `LYRICS`
 for flac/ogg/opus, `©lyr` for m4a — which is what Navidrome reads. Untick *embed into file* in the UI

@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlparse
 import mutagen
 import paramiko
 from rescale_core import SCHEME, Library, Track, config, data_dir, library_for, session
+from rescale_writer import is_synced, read_embedded
 
 __all__ = ["SCHEME", "check", "client", "drop", "is_remote", "owner", "path_of", "probe",
            "progress", "pull", "push", "scan_remote", "walk"]
@@ -67,11 +68,13 @@ def check(lib: Library) -> Library:
     return lib
 
 
-def walk(lib: Library) -> list[tuple[PurePosixPath, paramiko.SFTPAttributes]]:
-    """Recursive listing of audio files under the remote root. Symlinks are left alone (no loops)."""
+def walk(lib: Library) -> tuple[list[tuple[PurePosixPath, paramiko.SFTPAttributes]], set[PurePosixPath]]:
+    """Recursive listing of (audio files, .lrc sidecars) under the remote root. The sidecars come out
+    of the same listing, so knowing which tracks already have one costs no extra round trips.
+    Symlinks are left alone (no loops)."""
     cfg = config()["library"]
     exts, skip = set(cfg["extensions"]), set(cfg["skip_dirs"])
-    sftp, out, stack = client(lib), [], [lib.root]
+    sftp, out, sidecars, stack = client(lib), [], set(), [lib.root]
     while stack:
         d = stack.pop()
         progress[lib.id] = {"phase": "listing folders", "done": len(out), "total": 0, "current": str(d)}
@@ -80,17 +83,25 @@ def walk(lib: Library) -> list[tuple[PurePosixPath, paramiko.SFTPAttributes]]:
             if stat.S_ISDIR(a.st_mode):
                 if a.filename not in skip:
                     stack.append(p)
-            elif stat.S_ISREG(a.st_mode) and PurePosixPath(a.filename).suffix.lower() in exts:
-                out.append((p, a))
-    return sorted(out, key=lambda x: str(x[0]))
+            elif stat.S_ISREG(a.st_mode):
+                suffix = PurePosixPath(a.filename).suffix.lower()
+                if suffix in exts:
+                    out.append((p, a))
+                elif suffix == ".lrc":
+                    sidecars.add(p)
+    return sorted(out, key=lambda x: str(x[0])), sidecars
 
 
-def probe(lib: Library, p: PurePosixPath) -> dict:
-    """Duration + tags read straight off the server: mutagen only touches headers, so no full download."""
+def probe(lib: Library, p: PurePosixPath) -> tuple[dict, str | None]:
+    """(track info, embedded lyrics) read straight off the server: mutagen only touches headers, so
+    no full download. Both come off one open handle rather than two trips over the wire."""
     info = {"duration": None, "tag_title": None, "tag_artist": None, "tag_album": None}
+    lyrics = None
     try:
         with client(lib).open(str(p), "rb", bufsize=1 << 16) as f:
             m = mutagen.File(f, easy=True)
+            f.seek(0)
+            lyrics = read_embedded(f, p.suffix)
         if m is not None:
             info["duration"] = getattr(m.info, "length", None)
             for k in ("title", "artist", "album"):
@@ -98,19 +109,37 @@ def probe(lib: Library, p: PurePosixPath) -> dict:
                 info[f"tag_{k}"] = (v[0] if isinstance(v, list) else v) or None if v else None
     except Exception:
         pass  # unreadable tags are not a reason to skip the file; the matcher falls back to the filename
-    return info
+    return info, lyrics
+
+
+def found_lyrics(lib: Library, p: PurePosixPath, embedded: str | None,
+                 sidecars: set[PurePosixPath]) -> tuple[str, str] | None:
+    """Synced lyrics this remote track already carries: (lrc, "embedded" | "sidecar"), or None."""
+    if is_synced(embedded):
+        return embedded, "embedded"
+    side = p.with_suffix(".lrc")
+    if side not in sidecars:
+        return None
+    try:
+        with client(lib).open(str(side), "rb") as f:
+            text = f.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+    return (text, "sidecar") if is_synced(text) else None
 
 
 def scan_remote(lib: Library) -> dict:
     """Upsert every remote audio file into the same tracks table. Unchanged files (size+mtime) are left alone."""
     try:
-        return _scan(lib, walk(lib))
+        return _scan(lib, *walk(lib))
     finally:
         progress.pop(lib.id, None)
 
 
-def _scan(lib: Library, files: list[tuple[PurePosixPath, paramiko.SFTPAttributes]]) -> dict:
-    stats = {"files": len(files), "new": 0, "changed": 0, "unchanged": 0, "missing": 0}
+def _scan(lib: Library, files: list[tuple[PurePosixPath, paramiko.SFTPAttributes]],
+          sidecars: set[PurePosixPath]) -> dict:
+    from rescale_scanner import adopt  # deferred: rescale_scanner imports this module while loading
+    stats = {"files": len(files), "new": 0, "changed": 0, "unchanged": 0, "missing": 0, "with_lyrics": 0}
     with session() as db:
         known = {t.path: t for t in db.query(Track).filter(Track.path.startswith(lib.prefix, autoescape=True)).all()}
         for n, (p, a) in enumerate(files, 1):
@@ -121,14 +150,16 @@ def _scan(lib: Library, files: list[tuple[PurePosixPath, paramiko.SFTPAttributes
             if t and t.size == a.st_size and t.mtime == a.st_mtime:
                 stats["unchanged"] += 1
                 continue
-            info = probe(lib, p) | {"size": a.st_size, "mtime": float(a.st_mtime)}
+            probed, embedded = probe(lib, p)
+            info = probed | {"size": a.st_size, "mtime": float(a.st_mtime)}
             if t is None:
                 t = Track(path=url, folder=str(p.parent.relative_to(lib.root)), filename=p.name)
                 db.add(t)
                 stats["new"] += 1
             else:
                 stats["changed"] += 1
-                t.status, t.lyrics, t.error = "pending", None, None
+            adopt(t, found_lyrics(lib, p, embedded, sidecars))
+            stats["with_lyrics"] += t.status == "has-lyrics"
             for k, v in info.items():
                 setattr(t, k, v)
         for t in known.values():  # gone from the server

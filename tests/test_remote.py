@@ -31,7 +31,8 @@ def isolated(tmp_path, monkeypatch):
     config.cache_clear()
     core._session_factory.cache_clear()
     save_libraries([NAS])
-    monkeypatch.setattr(remote, "probe", lambda lib, p: {"duration": 1.0, "tag_title": None, "tag_artist": None, "tag_album": None})
+    monkeypatch.setattr(remote, "probe",
+                        lambda lib, p: ({"duration": 1.0, "tag_title": None, "tag_artist": None, "tag_album": None}, None))
     yield tmp_path
     config.cache_clear()
     core._session_factory.cache_clear()
@@ -39,7 +40,7 @@ def isolated(tmp_path, monkeypatch):
 
 DIR = stat.S_IFDIR
 TREE = {
-    "/mnt/data/music": [Attr("a.mp3"), Attr("cover.jpg"), Attr("Artist", DIR), Attr(".mp3thumb_backup", DIR)],
+    "/mnt/data/music": [Attr("a.mp3"), Attr("a.lrc"), Attr("cover.jpg"), Attr("Artist", DIR), Attr(".mp3thumb_backup", DIR)],
     "/mnt/data/music/Artist": [Attr("deep #1?.flac")],
     "/mnt/data/music/.mp3thumb_backup": [Attr("junk.mp3")],
 }
@@ -47,7 +48,10 @@ TREE = {
 
 def test_walk_is_recursive_and_filtered(isolated, monkeypatch):
     monkeypatch.setattr(remote, "client", lambda lib: FakeSFTP(TREE))
-    assert [str(p) for p, _ in remote.walk(NAS)] == ["/mnt/data/music/Artist/deep #1?.flac", "/mnt/data/music/a.mp3"]
+    files, sidecars = remote.walk(NAS)
+    assert [str(p) for p, _ in files] == ["/mnt/data/music/Artist/deep #1?.flac", "/mnt/data/music/a.mp3"]
+    # .lrc files come out of the same listing, so "does this track already have lyrics" is free
+    assert {str(p) for p in sidecars} == {"/mnt/data/music/a.lrc"}
 
 
 def test_url_survives_characters_that_break_urls(isolated):
@@ -58,12 +62,14 @@ def test_url_survives_characters_that_break_urls(isolated):
 
 def test_scan_remote_upserts_and_forgets_gone_files(isolated, monkeypatch):
     monkeypatch.setattr(remote, "client", lambda lib: FakeSFTP(TREE))
-    assert remote.scan_remote(NAS) | {} == {"files": 2, "new": 2, "changed": 0, "unchanged": 0, "missing": 0}
+    assert remote.scan_remote(NAS) | {} == {"files": 2, "new": 2, "changed": 0, "unchanged": 0,
+                                           "missing": 0, "with_lyrics": 0}
     assert remote.scan_remote(NAS)["unchanged"] == 2  # same size+mtime -> left alone
 
     smaller = dict(TREE, **{"/mnt/data/music": [Attr("a.mp3", size=99)]})
     monkeypatch.setattr(remote, "client", lambda lib: FakeSFTP(smaller))
-    assert remote.scan_remote(NAS) | {} == {"files": 1, "new": 0, "changed": 1, "unchanged": 0, "missing": 1}
+    assert remote.scan_remote(NAS) | {} == {"files": 1, "new": 0, "changed": 1, "unchanged": 0,
+                                           "missing": 1, "with_lyrics": 0}
     with session() as db:
         t = db.query(Track).one()
         assert t.path.startswith(SCHEME + "yuuki@nas/mnt/data/music") and t.filename == "a.mp3" and t.folder == "."
