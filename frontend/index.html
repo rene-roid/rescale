@@ -10,11 +10,13 @@
     --bg:#0d0d0e; --panel:#141416; --raised:#1a1b1e; --line:#26272b; --line-soft:#1e1f22;
     --fg:#e7e7ea; --mute:#8b8d94; --dim:#5c5e64;
     --hi:#ffd166; --ok:#5fce8f; --warn:#e2a63f; --bad:#f0605c; --ai:#7aa8ff;
-    --fs-1:11px; --fs-2:13px; --fs-3:15px; --fs-4:17px; --fs-5:23px;
+    --fs-1:11px; --fs-2:13px; --fs-3:15px; --fs-4:17px;
     --sp-1:4px; --sp-2:8px; --sp-3:14px; --sp-4:20px;
+    --ctl-h:30px;                     /* one height for every control in the header */
     --ease:cubic-bezier(.16,1,.3,1);
   }
   * { box-sizing: border-box; }
+  [hidden] { display:none !important; }   /* beats the display:flex/grid rules below */
   ::selection { background:#3a3210; color:var(--hi); }
   ::-webkit-scrollbar { width:11px; height:11px; }
   ::-webkit-scrollbar-track { background:transparent; }
@@ -28,21 +30,76 @@
     display:grid; grid-template-rows:auto 1fr; height:100vh;
   }
 
-  header {
-    display:flex; gap:var(--sp-3); align-items:center;
-    padding:var(--sp-2) var(--sp-4); background:var(--panel);
-    border-bottom:1px solid var(--line); flex-wrap:wrap;
-  }
-  header h1 {
-    font-size:var(--fs-4); font-weight:700; letter-spacing:-.01em;
-    margin:0 var(--sp-2) 0 0; color:var(--fg);
-  }
-  header .counts { display:flex; flex-wrap:wrap; gap:var(--sp-3); font-size:var(--fs-1); }
-  header .counts span { color:var(--dim); text-transform:uppercase; letter-spacing:.04em; }
-  header .counts b { color:var(--mute); font-weight:600; margin-left:3px; }
-  #busy { font-size:var(--fs-1); color:var(--hi); text-transform:uppercase; letter-spacing:.04em; display:none; }
-  #busy.on { display:inline; animation:pulse 1.2s ease-in-out infinite; }
+  /* ---- header: identity + scope on top, actions underneath ---- */
+  header { background:var(--panel); border-bottom:1px solid var(--line); }
+  .bar { display:flex; align-items:center; gap:var(--sp-2); padding:var(--sp-2) var(--sp-4); min-height:46px; }
+  .bar + .bar { border-top:1px solid var(--line-soft); }
+  .brand { display:flex; align-items:center; gap:var(--sp-2); margin-right:var(--sp-2); }
+  .brand img { width:20px; height:20px; border-radius:4px; }
+  .brand h1 { font-size:var(--fs-4); font-weight:700; letter-spacing:-.01em; margin:0; }
+  .spacer { margin-left:auto; }
+  .sep { width:1px; height:18px; background:var(--line); }
 
+  /* ---- one control geometry, everywhere ---- */
+  button, select, input {
+    height:var(--ctl-h); background:var(--raised); color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:0 10px; font:inherit; font-size:var(--fs-2);
+    transition:background-color .12s var(--ease), border-color .12s var(--ease), color .12s var(--ease);
+  }
+  button { cursor:pointer; font-weight:500; white-space:nowrap; }
+  button:hover:not(:disabled) { background:#232427; border-color:#3a3b40; }
+  button:active:not(:disabled) { background:#1c1d20; }
+  button:disabled { opacity:.45; cursor:default; }
+  button.accent { border-color:#3d3115; background:#20190a; color:#ffdd8f; }
+  button.accent:hover:not(:disabled) { background:#2a2110; border-color:#4a3a18; }
+  button.icon { padding:0 9px; color:var(--mute); }
+  input::placeholder { color:var(--dim); }
+  .group { display:flex; gap:6px; }
+
+  .check { display:flex; align-items:center; gap:6px; height:var(--ctl-h); color:var(--mute); cursor:pointer; white-space:nowrap; }
+  .check:hover { color:var(--fg); }
+  .check input { width:14px; height:14px; padding:0; border-radius:3px; accent-color:var(--hi); cursor:pointer; }
+
+  /* ---- status chips double as the filter, so counts and filtering are one control ---- */
+  .chips { display:flex; gap:6px; flex-wrap:wrap; }
+  .chip {
+    display:inline-flex; align-items:center; gap:6px; height:var(--ctl-h); padding:0 10px;
+    border:1px solid var(--line); border-radius:6px; background:transparent; color:var(--mute);
+    font-size:var(--fs-1); font-weight:600; text-transform:uppercase; letter-spacing:.04em; cursor:pointer;
+  }
+  .chip:hover { background:var(--raised); color:var(--fg); }
+  .chip .n { color:var(--fg); font-variant-numeric:tabular-nums; font-weight:700; letter-spacing:0; }
+  .chip .dot { width:6px; height:6px; border-radius:50%; background:var(--mute); }
+  .chip[data-k=pending] .dot { background:var(--mute); }
+  .chip[data-k=matched-online] .dot { background:var(--ok); }
+  .chip[data-k=ai-transcribed] .dot { background:var(--ai); }
+  .chip[data-k=needs-review] .dot { background:var(--warn); }
+  .chip[data-k=failed] .dot { background:var(--bad); }
+  .chip.on { background:var(--raised); border-color:#3f4046; color:var(--fg); }
+
+  /* ---- one badge shape for status and flags alike ---- */
+  .tag {
+    display:inline-flex; align-items:center; gap:5px; height:19px; padding:0 8px;
+    border-radius:99px; font-size:var(--fs-1); font-weight:600; letter-spacing:.02em;
+    color:#0a0a0a; background:var(--mute); white-space:nowrap;
+  }
+  .tag::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; opacity:.55; }
+  .tag.matched-online { background:var(--ok); } .tag.ai-transcribed { background:var(--ai); }
+  .tag.needs-review { background:var(--warn); } .tag.failed { background:var(--bad); }
+  .tag.processing { background:var(--ai); animation:pulse 1.2s ease-in-out infinite; }
+  .tag.ghost { background:transparent; border:1px solid var(--line); color:var(--mute); font-weight:500; }
+  .tag.ghost::before { display:none; }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
+
+  #progress {
+    display:none; align-items:center; gap:var(--sp-2); height:var(--ctl-h);
+    font-size:var(--fs-1); color:var(--hi); max-width:44ch;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #progress.on { display:flex; }
+  #progress b { color:var(--mute); font-weight:600; font-variant-numeric:tabular-nums; }
+
+  /* ---- track table ---- */
   main { display:grid; grid-template-columns: minmax(0,1fr) 440px; min-height:0; }
   #list { overflow:auto; }
   table { width:100%; border-collapse:collapse; table-layout:fixed; }
@@ -51,52 +108,37 @@
     white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
   }
   th {
-    position:sticky; top:0; background:var(--panel); color:var(--dim);
+    position:sticky; top:0; z-index:1; background:var(--panel); color:var(--dim);
     font-weight:600; font-size:var(--fs-1); text-transform:uppercase; letter-spacing:.05em;
     box-shadow:0 1px 0 var(--line);
   }
   td { font-size:var(--fs-2); color:var(--fg); }
-  td:nth-child(2) { font-variant-numeric:tabular-nums; color:var(--mute); }
+  td.folder { color:var(--mute); }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  td.num { color:var(--mute); }
   tr { transition:background-color .1s var(--ease); }
-  tr:hover td { background:var(--raised); cursor:pointer; }
+  tbody tr:hover td { background:var(--raised); cursor:pointer; }
   tr.sel td { background:#20211f; }
   tr.sel td:first-child { box-shadow:inset 3px 0 var(--hi); }
+  .empty { color:var(--dim); padding:var(--sp-4) var(--sp-3); font-size:var(--fs-2); }
 
-  .st {
-    display:inline-flex; align-items:center; gap:5px;
-    padding:2px 8px 2px 6px; border-radius:99px; font-size:var(--fs-1);
-    font-weight:600; letter-spacing:.02em; color:#0a0a0a; background:var(--mute);
-  }
-  .st::before { content:""; width:5px; height:5px; border-radius:50%; background:currentColor; opacity:.55; }
-  .st.matched-online { background:var(--ok); } .st.ai-transcribed { background:var(--ai); }
-  .st.needs-review { background:var(--warn); } .st.failed { background:var(--bad); }
-  .st.processing { background:var(--ai); animation:pulse 1.2s ease-in-out infinite; }
-  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
-
-  .loading-msg { color:var(--dim); padding:var(--sp-4) var(--sp-3); font-size:var(--fs-2); }
-
-  button, select, input {
-    background:var(--raised); color:var(--fg); border:1px solid var(--line);
-    border-radius:6px; padding:var(--sp-2) var(--sp-3); font:inherit; font-size:var(--fs-2);
-    transition:background-color .12s var(--ease), border-color .12s var(--ease);
-  }
-  button { cursor:pointer; font-weight:500; }
-  button:hover { background:#232427; border-color:#3a3b40; }
-  button:active { background:#1c1d20; }
-  button:disabled { opacity:.5; cursor:default; }
-  input::placeholder { color:var(--dim); }
-  #btn-scan { border-color:#3d3115; background:#20190a; color:#ffdd8f; }
-  #btn-scan:hover { background:#2a2110; border-color:#4a3a18; }
-  #embed-label { display:flex; align-items:center; gap:6px; color:var(--mute); cursor:pointer; }
-  #embed-label:hover { color:var(--fg); }
-  #embed-label input { width:14px; height:14px; padding:0; border-radius:3px; accent-color:var(--hi); cursor:pointer; }
-
+  /* ---- detail pane ---- */
   aside { border-left:1px solid var(--line); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
-  aside .meta { padding:var(--sp-3) var(--sp-4); border-bottom:1px solid var(--line); font-size:var(--fs-2); }
-  aside .meta > b:first-child { display:block; font-size:var(--fs-3); font-weight:600; margin-bottom:var(--sp-2); color:var(--fg); }
-  aside .meta div { margin:5px 0; color:var(--mute); line-height:1.6; }
-  aside .meta b { color:var(--fg); font-weight:600; }
-  aside .actions { padding:var(--sp-3) var(--sp-4); display:flex; gap:var(--sp-2); flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  aside .head { padding:var(--sp-3) var(--sp-4) var(--sp-2); border-bottom:1px solid var(--line-soft); }
+  aside .head b { display:block; font-size:var(--fs-3); font-weight:600; line-height:1.4; }
+  aside .head span { color:var(--dim); font-size:var(--fs-1); }
+  .facts { display:grid; grid-template-columns:74px minmax(0,1fr); gap:5px var(--sp-3);
+           padding:var(--sp-3) var(--sp-4); border-bottom:1px solid var(--line); align-items:baseline; }
+  .facts dt { color:var(--dim); font-size:var(--fs-1); text-transform:uppercase; letter-spacing:.04em; }
+  .facts dd { margin:0; color:var(--fg); min-width:0; overflow-wrap:anywhere; }
+  .facts dd .sub { color:var(--mute); }
+  .facts dd.row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  details { grid-column:1/-1; margin-top:var(--sp-1); }
+  details summary { color:var(--mute); font-size:var(--fs-1); cursor:pointer; text-transform:uppercase; letter-spacing:.04em; }
+  details p { margin:var(--sp-2) 0 0; color:var(--mute); font-size:var(--fs-1); line-height:1.6; max-height:150px; overflow:auto; }
+  .err { color:var(--bad); white-space:pre-wrap; }
+  aside .actions { padding:var(--sp-3) var(--sp-4); display:flex; gap:6px; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  aside .player { padding:var(--sp-2) var(--sp-4); border-bottom:1px solid var(--line-soft); }
   audio { width:100%; height:32px; }
   audio::-webkit-media-controls-panel { background:var(--raised); }
 
@@ -108,100 +150,279 @@
   #lyrics p:hover { color:var(--mute); background:var(--raised); }
   #lyrics p.on { color:var(--hi); background:#221c0c; font-weight:600; }
   #lyrics p small { color:var(--dim); margin-right:10px; font-variant-numeric:tabular-nums; font-weight:400; font-size:var(--fs-1); }
-  .err { color:var(--bad); white-space:pre-wrap; }
+
+  /* ---- dialogs ---- */
+  dialog {
+    background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:10px;
+    padding:var(--sp-4); width:min(520px, 92vw); font:inherit; font-size:var(--fs-2);
+  }
+  dialog::backdrop { background:#000a; }
+  dialog h2 { margin:0 0 var(--sp-1); font-size:var(--fs-3); font-weight:600; }
+  dialog .hint { margin:0 0 var(--sp-3); color:var(--dim); font-size:var(--fs-1); line-height:1.6; }
+  dialog label { display:block; margin-bottom:var(--sp-2); color:var(--mute); font-size:var(--fs-1); }
+  dialog label input { display:block; width:100%; margin-top:var(--sp-1); color:var(--fg); font-size:var(--fs-2); }
+  dialog .fields { display:grid; grid-template-columns:1fr 1fr; gap:0 var(--sp-2); }
+  dialog .fields label.wide { grid-column:1/-1; }
+  dialog .row { display:flex; gap:var(--sp-2); align-items:center; justify-content:flex-end; margin-top:var(--sp-3); }
+  .lib-list { display:flex; flex-direction:column; gap:6px; margin-bottom:var(--sp-3);
+              max-height:210px; overflow:auto; }
+  .lib {
+    display:grid; grid-template-columns:1fr auto auto; gap:var(--sp-2); align-items:center;
+    padding:var(--sp-2) var(--sp-3); background:var(--raised); border:1px solid var(--line-soft); border-radius:6px;
+  }
+  .lib .n { font-weight:600; }
+  .lib .u { color:var(--dim); font-size:var(--fs-1); overflow-wrap:anywhere; }
+  .lib button { height:24px; padding:0 8px; font-size:var(--fs-1); }
+  hr { border:0; border-top:1px solid var(--line); margin:var(--sp-3) 0; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Rescale</h1>
-  <select id="status">
-    <option value="">all statuses</option>
-    <option>pending</option><option>matched-online</option><option>ai-transcribed</option><option>needs-review</option><option>failed</option>
-  </select>
-  <input id="q" placeholder="filter by path…" size="28">
-  <span class="counts" id="counts"></span>
-  <span id="busy">loading…</span>
-  <span style="margin-left:auto"></span>
-  <input id="root" placeholder="/path/to/music" size="24"
-         title="Folder scanned recursively for audio files. Changing it forgets tracks outside the new folder.">
-  <button id="btn-scan" onclick="rescan()">rescan library</button>
-  <label id="embed-label" title="Write lyrics into the file's ID3 USLT tag instead of a .lrc sidecar">
-    <input type="checkbox" id="embed"> embed into file
-  </label>
-  <button id="btn-pending" onclick="run('btn-pending', '/api/run?status=pending' + embedParam(), 'running…')">run pending</button>
-  <button id="btn-failed" onclick="run('btn-failed', '/api/run?status=failed' + embedParam(), 'retrying…')">retry failed</button>
-</header>
-<main>
-  <div id="list"><table><thead><tr><th style="width:130px">status</th><th style="width:56px">conf</th><th style="width:72px">via</th><th style="width:20%">folder</th><th>file</th><th style="width:200px">parsed</th></tr></thead><tbody id="rows"><tr><td colspan="6" class="loading-msg">loading…</td></tr></tbody></table></div>
-  <aside>
-    <div class="meta" id="meta">Select a track.</div>
-    <div class="actions" id="actions" hidden>
-      <button onclick="reprocess('auto')">reprocess (auto)</button>
-      <button onclick="reprocess('online')">use online lookup</button>
-      <button onclick="reprocess('ai')">use AI transcription</button>
+  <div class="bar">
+    <div class="brand"><img src="/icon.png" alt=""><h1>Rescale</h1></div>
+    <div class="sep"></div>
+    <select id="lib" title="Only this folder's tracks are listed and processed"></select>
+    <button class="icon" id="btn-libs" title="Add, edit or remove libraries">libraries…</button>
+    <input id="q" placeholder="filter by path…" size="26">
+    <span id="progress"></span>
+    <span class="spacer"></span>
+    <label class="check" title="Write lyrics into the file's own lyrics tag rather than a .lrc sidecar next to it">
+      <input type="checkbox" id="embed"> embed into file
+    </label>
+  </div>
+  <div class="bar">
+    <div class="chips" id="chips"></div>
+    <span class="spacer"></span>
+    <div class="group">
+      <button class="accent" id="btn-scan" title="Walk this library for new or changed files">rescan library</button>
+      <button id="btn-pending">run pending</button>
+      <button id="btn-failed">retry failed</button>
+      <button id="btn-review">retry review</button>
+      <button id="btn-all">retry all</button>
     </div>
-    <div style="padding:8px 12px"><audio id="player" controls preload="none"></audio></div>
+  </div>
+</header>
+
+<main>
+  <div id="list">
+    <table>
+      <thead><tr>
+        <th style="width:124px">status</th>
+        <th style="width:56px" class="num">conf</th>
+        <th style="width:62px">via</th>
+        <th style="width:22%">folder</th>
+        <th>file</th>
+        <th style="width:170px">parsed title</th>
+        <th style="width:92px">flags</th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="7" class="empty">loading…</td></tr></tbody>
+    </table>
+  </div>
+  <aside>
+    <div class="head" id="head"><span>Select a track.</span></div>
+    <dl class="facts" id="facts" hidden></dl>
+    <div class="actions" id="actions" hidden>
+      <button onclick="reprocess('auto')">reprocess</button>
+      <button onclick="reprocess('online')">force online</button>
+      <button onclick="reprocess('ai')">force AI</button>
+    </div>
+    <div class="player" id="player-box" hidden><audio id="player" controls preload="none"></audio></div>
     <div id="lyrics"></div>
   </aside>
 </main>
+
+<dialog id="libs-dlg">
+  <h2>Libraries</h2>
+  <p class="hint">A local folder, or a folder on another machine over SFTP. Only the selected library's
+     tracks are listed and processed. Remote libraries are re-walked for new files every few minutes;
+     what they find waits as <b>pending</b> until you run it. Credentials are saved on this machine,
+     readable only by you.</p>
+  <div class="lib-list" id="lib-list"></div>
+  <hr>
+  <form method="dialog" onsubmit="saveLib(event)">
+    <input type="hidden" id="l-id">
+    <div class="fields">
+      <label class="wide">folder<input id="l-url" placeholder="/home/you/Music  or  sftp://user@nas/mnt/music" required></label>
+      <label class="wide">name<input id="l-name" placeholder="optional, defaults to the folder name"></label>
+      <label>username <span class="hint">SFTP only</span><input id="l-user" autocomplete="username"></label>
+      <label>password <span class="hint">blank = SSH key</span><input id="l-pass" type="password" autocomplete="current-password"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="l-auto" checked> poll this folder for new files</label>
+    <div class="row">
+      <span id="l-msg" class="hint" style="margin:0 auto 0 0"></span>
+      <button type="button" onclick="resetLibForm()">clear</button>
+      <button type="button" onclick="$('#libs-dlg').close()">close</button>
+      <button class="accent" id="btn-lib-save" type="submit">save &amp; scan</button>
+    </div>
+  </form>
+</dialog>
+
 <script>
 const $ = s => document.querySelector(s);
-let tracks = [], sel = null, lines = [], processingId = null;
-const post = (url) => fetch(url, {method: 'POST'}).then(r => r.json());
-const embedParam = () => '&embed=' + $('#embed').checked;
-const esc = s => (s ?? '').toString().replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const esc = s => (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const post = url => fetch(url, {method: 'POST'}).then(r => r.json());
+const STATUSES = ['pending', 'matched-online', 'ai-transcribed', 'needs-review', 'failed'];
 
-async function run(btnId, url, busyLabel) {
-  const btn = $('#' + btnId);
+let tracks = [], sel = null, lines = [], processingId = null, libs = [];
+let status = '', lib = localStorage.lib ?? '';
+
+const scope = () => `lib=${encodeURIComponent(lib)}`;
+const embedParam = () => '&embed=' + $('#embed').checked;
+
+/** Run one request behind its own button, so the button reports its own progress. */
+async function withButton(btn, label, fn) {
   const orig = btn.textContent;
-  btn.disabled = true; btn.textContent = busyLabel;
-  try { await post(url); await load(); }
+  btn.disabled = true; btn.textContent = label;
+  try { return await fn(); }
   finally { btn.disabled = false; btn.textContent = orig; }
 }
 
-async function rescan() {
-  const btn = $('#btn-scan'), orig = btn.textContent, root = $('#root').value.trim();
-  btn.disabled = true; btn.textContent = 'scanning…';
-  try {
-    const r = await fetch('/api/scan' + (root ? '?root=' + encodeURIComponent(root) : ''), {method: 'POST'});
-    const d = await r.json();
-    if (!r.ok) return alert(d.detail || 'scan failed');
-    await load();
-  } finally { btn.disabled = false; btn.textContent = orig; }
+const runIds = (btn, s, label) =>
+  withButton(btn, label, async () => { await post(`/api/run?status=${s}&${scope()}${embedParam()}`); await load(); });
+
+$('#btn-pending').onclick = e => runIds(e.target, 'pending', 'queueing…');
+$('#btn-failed').onclick = e => runIds(e.target, 'failed', 'queueing…');
+$('#btn-review').onclick = e => runIds(e.target, 'needs-review', 'queueing…');
+$('#btn-all').onclick = e => runIds(e.target, 'all', 'queueing…');
+
+$('#btn-scan').onclick = e => withButton(e.target, 'scanning…', async () => {
+  const r = await fetch(`/api/scan?${scope()}`, {method: 'POST'});
+  const d = await r.json();
+  if (!r.ok) return alert(d.detail || 'scan failed');
+  await load();
+});
+
+// ---- libraries ---------------------------------------------------------------------------------
+
+function renderLibs() {
+  $('#lib').innerHTML = `<option value="">all libraries</option>` + libs.map(l =>
+    `<option value="${esc(l.id)}" ${l.id === lib ? 'selected' : ''}>${esc(l.name)}</option>`).join('');
+  if (lib && !libs.some(l => l.id === lib)) { lib = ''; localStorage.lib = ''; }
+  $('#lib-list').innerHTML = libs.length ? libs.map(l => `<div class="lib">
+      <div><div class="n">${esc(l.name)} ${l.is_remote ? '<span class="tag ghost">sftp</span>' : ''}</div>
+           <div class="u">${esc(l.url)}</div></div>
+      <button onclick="editLib('${esc(l.id)}')">edit</button>
+      <button onclick="removeLib('${esc(l.id)}', '${esc(l.name)}')">remove</button>
+    </div>`).join('') : '<div class="empty">No libraries yet — add one below.</div>';
 }
+
+function resetLibForm() {
+  for (const id of ['l-id', 'l-url', 'l-name', 'l-user', 'l-pass']) $('#' + id).value = '';
+  $('#l-auto').checked = true; $('#l-msg').textContent = '';
+}
+
+function editLib(id) {
+  const l = libs.find(x => x.id === id);
+  $('#l-id').value = l.id; $('#l-url').value = l.url; $('#l-name').value = l.name;
+  $('#l-user').value = l.username; $('#l-pass').value = ''; $('#l-auto').checked = l.auto_scan;
+  $('#l-msg').textContent = l.has_password ? 'password saved — leave blank to keep it' : '';
+}
+
+async function saveLib(e) {
+  e.preventDefault();
+  await withButton($('#btn-lib-save'), 'checking…', async () => {
+    const body = {id: $('#l-id').value, url: $('#l-url').value.trim(), name: $('#l-name').value.trim(),
+                  username: $('#l-user').value, password: $('#l-pass').value, auto_scan: $('#l-auto').checked};
+    const r = await fetch('/api/libraries', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                             body: JSON.stringify(body)});
+    const d = await r.json();
+    if (!r.ok) { $('#l-msg').innerHTML = `<span class="err">${esc(d.detail || 'could not save')}</span>`; return; }
+    lib = d.id; localStorage.lib = lib;
+    resetLibForm();
+    await load();
+    await withButton($('#btn-scan'), 'scanning…', () => post(`/api/scan?${scope()}`));
+    await load();
+  });
+}
+
+async function removeLib(id, name) {
+  if (!confirm(`Forget "${name}" and everything scanned from it?\n\nNothing in the folder itself is touched.`)) return;
+  const d = await fetch(`/api/libraries/${id}`, {method: 'DELETE'}).then(r => r.json());
+  if (lib === id) { lib = ''; localStorage.lib = ''; }
+  $('#l-msg').textContent = `removed, ${d.tracks} tracks forgotten`;
+  await load();
+}
+
+$('#btn-libs').onclick = () => { renderLibs(); $('#libs-dlg').showModal(); };
+$('#lib').onchange = e => { lib = e.target.value; localStorage.lib = lib; sel = null; load(); };
+
+// ---- list --------------------------------------------------------------------------------------
+
+function renderChips(counts) {
+  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  $('#chips').innerHTML =
+    `<button class="chip ${status === '' ? 'on' : ''}" data-s=""><span class="dot"></span>all <span class="n">${total}</span></button>` +
+    STATUSES.map(s => `<button class="chip ${status === s ? 'on' : ''}" data-s="${s}" data-k="${s}">
+      <span class="dot"></span>${s.replace('-', ' ')} <span class="n">${counts[s] ?? 0}</span></button>`).join('');
+}
+
+function showProgress(p, queued, processing) {
+  const el = $('#progress');
+  const msg = p ? `${p.phase} <b>${p.total ? p.done + '/' + p.total : p.done}</b> · ${esc(p.current)}`
+    : processing ? `processing <b>${esc(processing.filename)}</b>${queued ? ` · <b>${queued}</b> queued` : ''}`
+    : queued ? `<b>${queued}</b> queued` : '';
+  el.classList.toggle('on', !!msg);
+  el.innerHTML = msg;
+  el.title = p ? p.current : (processing ? processing.folder + '/' + processing.filename : '');
+}
+
+const flags = t => (t.is_variant ? '<span class="tag ghost">variant</span>' : '')
+                 + (t.is_cover ? '<span class="tag ghost">cover</span>' : '');
 
 async function load() {
-  $('#busy').classList.add('on');
-  const st = $('#status').value, q = $('#q').value;
   const [list, stats] = await Promise.all([
-    fetch(`/api/tracks?status=${encodeURIComponent(st)}&q=${encodeURIComponent(q)}`).then(r => r.json()),
-    fetch('/api/stats').then(r => r.json())]);
-  $('#busy').classList.remove('on');
-  if (document.activeElement !== $('#root')) $('#root').value = stats.root ?? '';
+    fetch(`/api/tracks?status=${encodeURIComponent(status)}&q=${encodeURIComponent($('#q').value)}&${scope()}`).then(r => r.json()),
+    fetch(`/api/stats?${scope()}`).then(r => r.json())]);
   tracks = list;
-  processingId = stats.processing ? stats.processing.id : null;
-  $('#counts').innerHTML = Object.entries(stats.counts).map(([k, v]) => `<span>${k} <b>${v}</b></span>`).join('')
-    + `<span>queued <b>${stats.queued}</b></span>` + (stats.processing ? `<span>processing <b>${esc(stats.processing.filename)}</b></span>` : '');
-  $('#rows').innerHTML = tracks.map(t => `<tr data-id="${t.id}" class="${sel && sel.id === t.id ? 'sel' : ''}">
-    <td>${t.id === processingId ? '<span class="st processing">processing…</span>' : `<span class="st ${t.status}">${t.status}</span>`}</td><td>${t.confidence ?? ''}</td><td>${t.path_used ?? ''}${t.path_pref !== 'auto' ? ' *' : ''}</td>
-    <td title="${esc(t.folder)}">${esc(t.folder)}</td><td title="${esc(t.filename)}">${esc(t.filename)}</td>
-    <td title="${esc(t.parsed_title)} — ${esc(t.parsed_artist)}">${esc(t.parsed_title)}${t.is_variant ? ' ⏩' : ''}${t.is_cover ? ' 🎤' : ''}</td></tr>`).join('');
+  libs = stats.libraries;
+  processingId = stats.processing?.id ?? null;
+  renderLibs();
+  renderChips(stats.counts);
+  showProgress(stats.scan, stats.queued, stats.processing);
+  if (stats.error) $('#progress').innerHTML = `<span class="err">${esc(stats.error)}</span>`;
+
+  $('#rows').innerHTML = tracks.length ? tracks.map(t => `<tr data-id="${t.id}" class="${sel?.id === t.id ? 'sel' : ''}">
+    <td>${t.id === processingId ? '<span class="tag processing">processing</span>'
+                                : `<span class="tag ${t.status}">${t.status}</span>`}</td>
+    <td class="num">${t.confidence ?? '—'}</td>
+    <td>${t.path_used ? `<span class="tag ghost">${t.path_used}${t.path_pref !== 'auto' ? ' ·' : ''}</span>` : ''}</td>
+    <td class="folder" title="${esc(t.folder)}">${esc(t.folder)}</td>
+    <td title="${esc(t.filename)}">${esc(t.filename)}</td>
+    <td title="${esc(t.parsed_title)} — ${esc(t.parsed_artist)}">${esc(t.parsed_title)}</td>
+    <td>${flags(t)}</td></tr>`).join('')
+    : `<tr><td colspan="7" class="empty">${libs.length ? 'No tracks here. Try “rescan library”, or widen the filter.'
+                                                       : 'No libraries yet — open “libraries…” and add your music folder.'}</td></tr>`;
 }
 
+// ---- detail ------------------------------------------------------------------------------------
+
 async function select(id) {
-  $('#meta').innerHTML = '<div class="loading-msg">loading…</div>';
-  $('#actions').hidden = true;
   sel = await fetch(`/api/tracks/${id}`).then(r => r.json());
   document.querySelectorAll('#rows tr').forEach(tr => tr.classList.toggle('sel', +tr.dataset.id === id));
-  const info = sel.match_info ? JSON.parse(sel.match_info) : {};
-  $('#meta').innerHTML = `<b>${esc(sel.filename)}</b>
-    <div>tags: <b>${esc(sel.tag_title)}</b> — ${esc(sel.tag_artist)} · ${Math.round(sel.duration || 0)}s</div>
-    <div>parsed: <b>${esc(sel.parsed_title)}</b> — ${esc(sel.parsed_artist || '?')} ${sel.is_variant ? '· shifted variant' : ''} ${sel.is_cover ? '· cover/remix' : ''}</div>
-    <div>status: ${sel.id === processingId ? '<span class="st processing">processing…</span>' : `<span class="st ${sel.status}">${sel.status}</span>`} via <b>${sel.path_used ?? '-'}</b> (pref ${sel.path_pref}) conf <b>${sel.confidence ?? '-'}</b></div>
-    ${info.track ? `<div>LRCLIB: <b>${esc(info.track)}</b> — ${esc(info.artist)} · orig ${info.orig_duration}s · ratio ${info.ratio}</div>` : ''}
-    ${info.language ? `<div>whisper: lang <b>${info.language}</b> · align score ${info.score} · ${info.lines} lines</div>` : ''}
-    ${sel.error ? `<div class="err">${esc(sel.error)}</div>` : ''}`;
-  $('#actions').hidden = false;
+  const i = sel.match_info ? JSON.parse(sel.match_info) : {};
+  const fact = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
+
+  $('#head').innerHTML = `<b>${esc(sel.filename)}</b><span>${esc(sel.folder)}</span>`;
+  $('#facts').innerHTML =
+    `<dt>status</dt><dd class="row">
+       ${sel.id === processingId ? '<span class="tag processing">processing</span>'
+                                 : `<span class="tag ${sel.status}">${sel.status}</span>`}
+       ${sel.path_used ? `<span class="tag ghost">via ${sel.path_used}</span>` : ''}
+       ${sel.path_pref !== 'auto' ? `<span class="tag ghost">forced ${sel.path_pref}</span>` : ''}
+       ${sel.confidence != null ? `<span class="sub">conf ${sel.confidence}</span>` : ''}</dd>` +
+    fact('tags', `${esc(sel.tag_title) || '<span class="sub">none</span>'}
+          <span class="sub">— ${esc(sel.tag_artist) || '?'} · ${Math.round(sel.duration || 0)}s</span>`) +
+    fact('parsed', `${esc(sel.parsed_title)} <span class="sub">— ${esc(sel.parsed_artist) || '?'}</span>`) +
+    (sel.is_variant || sel.is_cover ? `<dt>flags</dt><dd class="row">${flags(sel)}</dd>` : '') +
+    fact('lrclib', i.track ? `${esc(i.track)} <span class="sub">— ${esc(i.artist)} · ${i.orig_duration}s
+          · speed ${i.ratio}× · offset ${i.offset}s</span>` : '') +
+    fact('whisper', i.language ? `${i.language} <span class="sub">· align ${i.score} · ${i.lines} lines</span>` : '') +
+    fact('cross-check', i.lyric_sim != null
+      ? `${Math.round(i.lyric_sim * 100)}% of the transcript is in these lyrics
+         ${i.heard ? `<details><summary>what the audio actually says</summary><p>${esc(i.heard)}…</p></details>` : ''}` : '') +
+    (sel.error ? `<dt>error</dt><dd class="err">${esc(sel.error)}</dd>` : '');
+  for (const id of ['#facts', '#actions', '#player-box']) $(id).hidden = false;
+
   const p = $('#player'); p.src = `/api/tracks/${id}/audio`; p.load();
   lines = [];
   for (const line of (sel.lyrics || '').split('\n')) {
@@ -209,7 +430,7 @@ async function select(id) {
     if (m) lines.push({t: +m[1] * 60 + +m[2], text: m[3]});
   }
   $('#lyrics').innerHTML = lines.length
-    ? lines.map((l, i) => `<p data-i="${i}" onclick="seek(${l.t})"><small>${fmt(l.t)}</small>${esc(l.text)}</p>`).join('')
+    ? lines.map((l, n) => `<p data-i="${n}" onclick="seek(${l.t})"><small>${fmt(l.t)}</small>${esc(l.text)}</p>`).join('')
     : '<p>No lyrics yet.</p>';
 }
 
@@ -235,21 +456,33 @@ async function reprocess(path) {
   finally { btns.forEach(b => b.disabled = false); }
 }
 
-$('#rows').addEventListener('click', e => { const tr = e.target.closest('tr'); if (tr) select(+tr.dataset.id); });
-$('#status').addEventListener('change', load);
-$('#root').addEventListener('keydown', e => { if (e.key === 'Enter') rescan(); });
+// ---- wiring ------------------------------------------------------------------------------------
+
+$('#rows').addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(+tr.dataset.id); });
+$('#chips').addEventListener('click', e => {
+  const c = e.target.closest('.chip'); if (!c) return;
+  status = c.dataset.s; load();
+});
 $('#q').addEventListener('input', () => { clearTimeout(window._t); window._t = setTimeout(load, 250); });
-load();
+$('#embed').addEventListener('change', e => localStorage.embed = e.target.checked);
+
+(async () => {
+  const stats = await fetch('/api/stats').then(r => r.json());
+  $('#embed').checked = localStorage.embed != null ? localStorage.embed === 'true' : stats.embed_default;
+  await load();
+})();
+
 let wasBusy = false;
 setInterval(async () => {  // keep statuses fresh while the worker runs, and catch the final refresh once it goes idle
-  const s = await fetch('/api/stats').then(r => r.json());
-  const busy = !!(s.queued || s.processing);
+  const s = await fetch(`/api/stats?${scope()}`).then(r => r.json());
+  showProgress(s.scan, s.queued, s.processing);
+  const busy = !!(s.queued || s.processing || s.scan);
   if (busy || wasBusy) {
-    load();
+    await load();
     if (sel && (sel.id === processingId || sel.status === 'pending')) select(sel.id);
   }
   wasBusy = busy;
-}, 4000);
+}, 2000);
 </script>
 </body>
 </html>

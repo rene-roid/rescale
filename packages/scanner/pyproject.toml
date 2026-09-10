@@ -5,6 +5,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "rescale-core",
     "mutagen>=1.47",
+    "paramiko>=5.0.0",
+    "fusepy>=3.0.1",
 ]
 
 [build-system]

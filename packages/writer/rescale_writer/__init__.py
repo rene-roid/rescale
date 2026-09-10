@@ -7,11 +7,15 @@ import shutil
 import tempfile
 from pathlib import Path
 
+import mutagen
 from mutagen.id3 import ID3, ID3NoHeaderError, USLT
+from mutagen.mp4 import MP4
 
-# ID3 is the only tag format this writes into (per the USLT frame the feature was asked for).
-# Other library formats (flac/m4a/ogg/opus) fall back to the .lrc sidecar.
-ID3_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aif"}
+# One lyrics tag per container family, all of which Navidrome reads.
+ID3_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aif"}          # USLT frame
+VORBIS_EXTENSIONS = {".flac", ".ogg", ".oga", ".opus"}      # LYRICS comment
+MP4_EXTENSIONS = {".m4a", ".m4b", ".mp4"}                   # ©lyr atom
+EMBEDDABLE = ID3_EXTENSIONS | VORBIS_EXTENSIONS | MP4_EXTENSIONS
 
 
 def lrc_path(audio: Path) -> Path:
@@ -35,7 +39,7 @@ def write_lrc(audio: Path, lrc: str) -> Path:
 
 
 def can_embed(audio: Path) -> bool:
-    return audio.suffix.lower() in ID3_EXTENSIONS
+    return audio.suffix.lower() in EMBEDDABLE
 
 
 def _id3_span(data: bytes) -> tuple[int, int]:
@@ -51,27 +55,49 @@ def _id3_span(data: bytes) -> tuple[int, int]:
     return head, tail
 
 
+def _embed_id3(audio: Path, lrc: str) -> None:
+    """USLT frame, plus a check that only the tag changed: an ID3 rewrite moves the audio stream, and
+    a mangled one is a corrupted music file, not a failed lyric write."""
+    before = audio.read_bytes()
+    try:
+        tags = ID3(audio)
+    except ID3NoHeaderError:
+        tags = ID3()
+    tags.delall("USLT")
+    tags.add(USLT(encoding=3, lang="und", desc="", text=lrc))
+    tags.save(audio, v2_version=3)
+
+    after = audio.read_bytes()
+    bh, bt = _id3_span(before)
+    ah, at = _id3_span(after)
+    if before[bh:len(before) - bt] != after[ah:len(after) - at]:
+        raise RuntimeError(f"audio stream changed while embedding lyrics into {audio}")
+
+
+def _embed_tag(audio: Path, key: str, lrc: str) -> None:
+    """Vorbis comment / MP4 atom. mutagen rewrites the container itself, so there is no stream to verify."""
+    f = MP4(audio) if audio.suffix.lower() in MP4_EXTENSIONS else mutagen.File(audio)
+    if f is None:
+        raise RuntimeError(f"mutagen does not recognise {audio}")
+    if f.tags is None:
+        f.add_tags()
+    f[key] = lrc
+    f.save()
+
+
 def embed_lyrics(audio: Path, lrc: str) -> Path:
-    """Write `lrc` into an ID3 USLT frame instead of a sidecar file (what Navidrome reads).
-    Backs the file up first, and verifies the audio stream is byte-for-byte untouched -
-    only the tag changed - before dropping the backup; restores it otherwise."""
+    """Write `lrc` into the audio file's own lyrics tag instead of a sidecar (what Navidrome reads).
+    Backs the file up first and restores it if anything goes wrong."""
+    ext = audio.suffix.lower()
+    if ext not in EMBEDDABLE:
+        raise ValueError(f"no lyrics tag known for {ext} files")
     backup = audio.with_name(f".{audio.name}.rescale-bak")
     shutil.copy2(audio, backup)
     try:
-        before = audio.read_bytes()
-        try:
-            tags = ID3(audio)
-        except ID3NoHeaderError:
-            tags = ID3()
-        tags.delall("USLT")
-        tags.add(USLT(encoding=3, lang="und", desc="", text=lrc))
-        tags.save(audio, v2_version=3)
-
-        after = audio.read_bytes()
-        bh, bt = _id3_span(before)
-        ah, at = _id3_span(after)
-        if before[bh:len(before) - bt] != after[ah:len(after) - at]:
-            raise RuntimeError(f"audio stream changed while embedding lyrics into {audio}")
+        if ext in ID3_EXTENSIONS:
+            _embed_id3(audio, lrc)
+        else:
+            _embed_tag(audio, "\xa9lyr" if ext in MP4_EXTENSIONS else "lyrics", lrc)
     except BaseException:
         shutil.copy2(backup, audio)
         raise

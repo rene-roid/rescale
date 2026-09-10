@@ -4,13 +4,14 @@ services:
     container_name: rescale
     ports: ["8765:8765"]
     volumes:
-      # Library: mounted rw only because the .lrc sidecars are written next to the audio.
-      # The code never writes anything else in there.
+      # Library: mounted rw only because the lyrics are written into the audio files' tags
+      # (or a .lrc sidecar beside them). The code never writes anything else in there.
       - /home/yuuki/Music:/music
       # Everything generated (db, caches, model weights, stems, logs) stays in the repo's data/.
       - ./data:/app/data
     environment:
-      RESCALE_TRANSCRIBER_DEVICE: auto   # cuda if the runtime exposes a GPU, else cpu
+      RESCALE_LIBRARY_ROOT: /music        # where the mount above lands; seeds the first library
+      RESCALE_TRANSCRIBER_DEVICE: auto    # cuda if the runtime exposes a GPU, else cpu
     deploy:
       resources:
         reservations:

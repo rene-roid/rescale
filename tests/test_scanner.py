@@ -25,7 +25,7 @@ def test_override_wins_over_config_and_walk_is_recursive(isolated):
 
     assert library_root() != music.resolve()  # config default until the UI sets one
     assert set_library_root(str(music)) == music.resolve()
-    assert library_root() == music.resolve()  # and it persists in data/config/library_root
+    assert library_root() == music.resolve()  # and it persists in data/config/libraries.json
 
     assert [p.name for p in walk()] == ["deep.flac", "top.mp3"]  # nested, no non-audio, skip_dirs honoured
 

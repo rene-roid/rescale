@@ -1,5 +1,8 @@
 import os
+import shutil
+import subprocess
 
+import mutagen
 import pytest
 from mutagen.id3 import ID3
 from rescale_writer import can_embed, embed_lyrics, lrc_path
@@ -35,8 +38,28 @@ def test_embed_preserves_audio_and_writes_uslt(tmp_path, tagged):
 
 
 def test_can_embed():
-    assert can_embed(pytest.importorskip("pathlib").Path("x.mp3"))
-    assert not can_embed(pytest.importorskip("pathlib").Path("x.flac"))
+    from pathlib import Path
+    assert all(can_embed(Path("x" + e)) for e in (".mp3", ".flac", ".ogg", ".opus", ".m4a"))
+    assert not can_embed(Path("x.wma"))
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
+@pytest.mark.parametrize("ext, key", [(".flac", "lyrics"), (".ogg", "lyrics"), (".opus", "lyrics"),
+                                      (".m4a", "\xa9lyr")])
+def test_embed_round_trips_every_non_id3_format(tmp_path, ext, key):
+    """The formats that used to fall back to a sidecar. A real container, so this fails if mutagen
+    cannot actually carry the tag rather than only if the dispatch picks the wrong key."""
+    p = tmp_path / ("song" + ext)
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-y", str(p)], check=True)
+
+    assert embed_lyrics(p, LRC) == p
+
+    f = mutagen.File(p)
+    assert f[key][0] == LRC
+    assert f.info.length > 0  # still a playable file, not a tag with debris attached
+    assert not lrc_path(p).exists()
+    assert not (p.parent / f".{p.name}.rescale-bak").exists()
 
 
 def test_embed_restores_backup_on_failure(tmp_path, monkeypatch):

@@ -18,11 +18,13 @@ def main() -> None:
     r.add_argument("--filter", help="only tracks whose path contains this substring")
     r.add_argument("--limit", type=int)
     r.add_argument("--embed", action="store_true", default=None,
-                    help="embed lyrics into an ID3 USLT frame instead of writing a .lrc sidecar (default: config [writer] embed)")
+                    help="embed lyrics into the audio file's own lyrics tag rather than a .lrc sidecar (default: config [writer] embed)")
+    r.add_argument("--no-embed", dest="embed", action="store_false", help="always write a .lrc sidecar")
     p = sub.add_parser("prefer", help="set the path preference for tracks and mark them pending")
     p.add_argument("path", choices=["auto", "online", "ai"])
     p.add_argument("--filter", help="only tracks whose path contains this substring")
     sub.add_parser("status", help="counts per status")
+    sub.add_parser("libraries", help="list the configured libraries (local folders + SFTP)")
     v = sub.add_parser("serve", help="start the API + web UI")
     v.add_argument("--reload", action="store_true")
     v.add_argument("--root", help="library folder to serve; remembered for later runs and by the web UI")
@@ -40,7 +42,7 @@ def main() -> None:
         print(report() if a.report else scan())
     elif a.cmd == "run":
         statuses = ["pending"] + (["failed"] if a.retry_failed else []) + (["needs-review"] if a.redo_review else [])
-        ids = pipeline.select_ids(statuses, a.filter, a.limit)
+        ids = pipeline.select_ids(statuses, contains=a.filter, limit=a.limit)
         print(f"{len(ids)} tracks to process")
         for n, i in enumerate(ids, 1):
             t = pipeline.process(i, embed=a.embed)
@@ -50,6 +52,10 @@ def main() -> None:
         print(f"{pipeline.set_preference(a.path, a.filter)} tracks set to {a.path} and marked pending")
     elif a.cmd == "status":
         print(pipeline.counts())
+    elif a.cmd == "libraries":
+        from rescale_core import libraries
+        for l in libraries():
+            print(f"{l.id}  {l.name:20} {l.url}{'  (auto-scan)' if l.is_remote and l.auto_scan else ''}")
     elif a.cmd == "serve":
         import uvicorn
         from rescale_core import config
