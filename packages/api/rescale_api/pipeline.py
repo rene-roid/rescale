@@ -47,6 +47,18 @@ def _localized(t: Track):
         remote.drop(local)
 
 
+def _drop_stem(audio: Path) -> None:
+    """Throw away the vocal stem now the track is done with it, unless it is being kept on purpose."""
+    if config()["transcriber"]["keep_stems"]:
+        return
+    try:
+        from rescale_transcriber import drop_stem  # module import is light; torch loads on first use
+        if freed := drop_stem(audio):
+            log.debug("  freed %.0f MB of stem", freed / 2**20)
+    except Exception:  # a stem we cannot delete is not a reason to fail a track that succeeded
+        log.debug("  could not drop the stem for %s", audio, exc_info=True)
+
+
 def run_online(t: Track, p, audio: Path) -> tuple[str, str, float, dict] | None:
     cfg = config()["matcher"]
     cands = candidates(p, t.duration)[:3]
@@ -142,17 +154,20 @@ def process(track_id: int, embed: bool | None = None) -> Track:
         fatal = None
         try:
             with _localized(t) as audio:
-                result = None
-                if path == "online":
-                    result = run_online(t, p, audio)
-                    if result is None and t.path_pref == "auto":
-                        path = "ai"
-                if path == "ai":
-                    result = run_ai(t, p, audio)
-                if result is None:
-                    raise LookupError("no online lyrics match (path preference is online-only)")
-                lrc, status, conf, info = result
-                _write(t, audio, lrc, embed)
+                try:
+                    result = None
+                    if path == "online":
+                        result = run_online(t, p, audio)
+                        if result is None and t.path_pref == "auto":
+                            path = "ai"
+                    if path == "ai":
+                        result = run_ai(t, p, audio)
+                    if result is None:
+                        raise LookupError("no online lyrics match (path preference is online-only)")
+                    lrc, status, conf, info = result
+                    _write(t, audio, lrc, embed)
+                finally:
+                    _drop_stem(audio)
             t.lyrics, t.status, t.confidence, t.match_info, t.error = lrc, status, conf, json.dumps(info), None
             t.lrc_written_at = datetime.now(timezone.utc)
             log.info("  -> %s conf=%s %s", status, conf, info)

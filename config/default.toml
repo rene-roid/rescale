@@ -48,6 +48,10 @@ batch_size = 8            # VRAM knob: whisper batches share the card with demuc
 # this list falls back to the first entry. One entry skips detection entirely.
 languages = ["en", "ja"]
 demucs_model = "htdemucs"
+# Keep each track's separated vocal stem in data/stems/ after it has been transcribed. They are
+# uncompressed wav - a few hundred MB each, tens of GB over a library - and are only worth keeping if
+# you are re-running transcription repeatedly over the same tracks and want to skip Demucs each time.
+keep_stems = false
 # Mean word alignment score below this -> needs-review instead of ai-transcribed.
 review_below = 0.55
 

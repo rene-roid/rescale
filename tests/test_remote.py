@@ -1,4 +1,5 @@
 """The SFTP library: url round-trip, recursive walk filtering, and upserting remote tracks."""
+import shutil
 import stat
 from pathlib import PurePosixPath
 
@@ -7,6 +8,7 @@ import rescale_core as core
 from rescale_core import Library, Track, config, library_for, save_libraries, session
 from rescale_scanner import remote, scan
 from rescale_scanner.remote import SCHEME
+from rescale_writer import embed_lyrics, read_embedded
 
 NAS = Library("nas1", "NAS", "sftp://yuuki@nas/mnt/data/music", password="gamer")
 
@@ -32,7 +34,7 @@ def isolated(tmp_path, monkeypatch):
     core._session_factory.cache_clear()
     save_libraries([NAS])
     monkeypatch.setattr(remote, "probe",
-                        lambda lib, p: ({"duration": 1.0, "tag_title": None, "tag_artist": None, "tag_album": None}, None))
+                        lambda lib, p, size: ({"duration": 1.0, "tag_title": None, "tag_artist": None, "tag_album": None}, None))
     yield tmp_path
     config.cache_clear()
     core._session_factory.cache_clear()
@@ -124,3 +126,38 @@ def test_write_pushes_to_the_original_name_not_the_hashed_local_copy(isolated, m
     assert pushed["t"] == expected
     assert pushed["lib"] == "nas1"  # resolved back to its own server by prefix
     assert (t.size, t.mtime) == ((7, 9.0) if embed else (1, 1.0))  # only an embed changes the file itself
+
+
+def test_tags_parse_the_same_from_the_ends_of_a_file_as_from_all_of_it(tmp_path):
+    """Tag reading pulls only the head and tail of a remote file, because letting mutagen seek through
+    the audio stream costs a 5 ms round trip per few KB - 13 s on one 50 MB file. The bytes it does
+    get must produce identical tags, and an identical duration: mutagen derives the length of a CBR
+    mp3 from the file size, so the window has to keep reporting the real one."""
+    import subprocess
+    import mutagen
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg to make a real container")
+    p = tmp_path / "song.mp3"
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=12",
+                    "-metadata", "title=Faded", "-metadata", "artist=Alan Walker", "-y", str(p)], check=True)
+    embed_lyrics(p, "[ti:Faded]\n[00:02.50]You were the shadow\n")
+
+    whole = mutagen.File(p, easy=True)
+    raw = p.read_bytes()
+    size = len(raw)
+    window = remote._Ends(raw[:4096], raw[-512:], size)  # a head far smaller than the audio stream
+    part = mutagen.File(window, easy=True)
+
+    assert part.tags["title"] == whole.tags["title"] == ["Faded"]
+    assert part.tags["artist"] == whole.tags["artist"] == ["Alan Walker"]
+    assert part.info.length == whole.info.length
+    window.seek(0)
+    assert read_embedded(window, ".mp3") == read_embedded(p, ".mp3")
+
+
+def test_the_window_reports_the_real_size_and_eofs_inside_the_audio():
+    w = remote._Ends(b"HEAD", b"TAIL", 1000)
+    assert w.seek(0, 2) == 1000                      # seek-to-end must give the true length
+    assert w.seek(0) == 0 and w.read(4) == b"HEAD"
+    assert w.seek(996) == 996 and w.read(4) == b"TAIL"
+    assert w.seek(500) == 500 and w.read(10) == b""  # the audio stream: EOF, never a network read

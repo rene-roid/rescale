@@ -156,6 +156,13 @@ for flac/ogg/opus, `©lyr` for m4a — which is what Navidrome reads. Untick *em
 (or set `[writer] embed = false`) to get a `<basename>.lrc` sidecar instead. Embedding backs the file
 up, and for mp3 checks the audio stream is byte-for-byte identical afterwards, before dropping the backup.
 
+**Disk:** the only thing `data/` keeps per track is its row in SQLite — lyrics, timings, match details.
+The separated vocal stem is deleted once the track has been transcribed; they are uncompressed wav,
+a few hundred MB each, and kept for a whole library they run to tens of GB. Set
+`[transcriber] keep_stems = true` if you are re-running transcription over the same tracks repeatedly
+and want to skip Demucs each time. Model weights in `data/models/` are the other big folder (~13 GB)
+and are re-downloaded if removed.
+
 **Config:** `config/default.toml`. Any key overrides via `RESCALE_<SECTION>_<KEY>` —
 `RESCALE_LIBRARY_ROOT=/music`, `RESCALE_TRANSCRIBER_DEVICE=cpu`,
 `RESCALE_TRANSCRIBER_BATCH_SIZE=4` if WhisperX OOMs next to Demucs.
@@ -204,5 +211,5 @@ rescale/
 ├── frontend/          # index.html: track list, player, live-highlighting lyrics
 ├── config/            # default.toml
 ├── tests/
-└── data/              # db, caches, model weights, stems, logs (gitignored)
+└── data/              # db, caches, model weights, logs (gitignored)
 ```

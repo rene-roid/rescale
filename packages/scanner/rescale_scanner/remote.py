@@ -7,6 +7,7 @@ keeps working on local files: a remote track is pulled into data/remote/ and the
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import stat
 import threading
@@ -92,23 +93,89 @@ def walk(lib: Library) -> tuple[list[tuple[PurePosixPath, paramiko.SFTPAttribute
     return sorted(out, key=lambda x: str(x[0])), sidecars
 
 
-def probe(lib: Library, p: PurePosixPath) -> tuple[dict, str | None]:
-    """(track info, embedded lyrics) read straight off the server: mutagen only touches headers, so
-    no full download. Both come off one open handle rather than two trips over the wire."""
+# Tags live at the ends of a file, never in the middle. Reading just the ends is what keeps a scan
+# to minutes: mutagen otherwise walks the audio stream a few KB at a time, and every one of those is
+# a 5 ms round trip - 13 s on a 50 MB file, against 0.07 s parsed from memory.
+HEAD = 1 << 20  # ID3v2 (artwork included), FLAC STREAMINFO + picture, RIFF chunk headers
+TAIL = 1 << 16  # ID3v1 is the last 128 bytes; MP4 hides `moov` back here on non-faststart files
+
+
+class _Ends(io.RawIOBase):
+    """The head and tail of a remote file held in memory, behind a file object that still reports the
+    real length - so a duration computed from the file size comes out exactly as it would have.
+    Reads that fall in the audio stream between them return EOF instead of going to the network."""
+
+    def __init__(self, head: bytes, tail: bytes, size: int):
+        self.head, self.tail, self.size, self.pos = head, tail, size, 0
+        self.tail_at = size - len(tail)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return True
+
+    def tell(self) -> int:
+        return self.pos
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        base = {io.SEEK_SET: 0, io.SEEK_CUR: self.pos, io.SEEK_END: self.size}[whence]
+        self.pos = max(0, base + offset)
+        return self.pos
+
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            n = max(0, self.size - self.pos)
+        if self.pos < len(self.head):
+            data = self.head[self.pos:self.pos + n]
+        elif self.tail and self.pos >= self.tail_at:
+            i = self.pos - self.tail_at
+            data = self.tail[i:i + n]
+        else:
+            data = b""
+        self.pos += len(data)
+        return data
+
+    def readinto(self, b) -> int:
+        data = self.read(len(b))
+        b[:len(data)] = data
+        return len(data)
+
+
+def ends(lib: Library, p: PurePosixPath, size: int, want: int = HEAD) -> _Ends:
+    """Pull the first `want` bytes and the tail of a remote file, in bulk prefetched reads."""
+    with client(lib).open(str(p), "rb", bufsize=1 << 16) as f:
+        n = min(size, want)
+        f.prefetch(n)
+        head = f.read(n)
+        tail = b""
+        if size > n + TAIL:
+            f.seek(size - TAIL)
+            tail = f.read(TAIL)
+    return _Ends(head, tail, size)
+
+
+def probe(lib: Library, p: PurePosixPath, size: int) -> tuple[dict, str | None]:
+    """(track info, embedded lyrics) read off the server without crawling through the audio."""
     info = {"duration": None, "tag_title": None, "tag_artist": None, "tag_album": None}
     lyrics = None
-    try:
-        with client(lib).open(str(p), "rb", bufsize=1 << 16) as f:
-            m = mutagen.File(f, easy=True)
-            f.seek(0)
-            lyrics = read_embedded(f, p.suffix)
-        if m is not None:
-            info["duration"] = getattr(m.info, "length", None)
-            for k in ("title", "artist", "album"):
-                v = (m.tags or {}).get(k)
-                info[f"tag_{k}"] = (v[0] if isinstance(v, list) else v) or None if v else None
-    except Exception:
-        pass  # unreadable tags are not a reason to skip the file; the matcher falls back to the filename
+    # A tag block bigger than HEAD (megabytes of cover art) truncates and raises; that file gets one
+    # more pass over the whole thing. Still a single bulk read, so still far cheaper than seeking.
+    for want in (HEAD, size):
+        try:
+            buf = ends(lib, p, size, want)  # both parses are in memory now, so doing two is free
+            m = mutagen.File(buf, easy=True)
+            buf.seek(0)
+            lyrics = read_embedded(buf, p.suffix)
+            if m is not None:
+                info["duration"] = getattr(m.info, "length", None)
+                for k in ("title", "artist", "album"):
+                    v = (m.tags or {}).get(k)
+                    info[f"tag_{k}"] = (v[0] if isinstance(v, list) else v) or None if v else None
+            return info, lyrics
+        except Exception:
+            if want >= size:
+                break  # unreadable tags are no reason to skip the file; the matcher uses the filename
     return info, lyrics
 
 
@@ -150,7 +217,7 @@ def _scan(lib: Library, files: list[tuple[PurePosixPath, paramiko.SFTPAttributes
             if t and t.size == a.st_size and t.mtime == a.st_mtime:
                 stats["unchanged"] += 1
                 continue
-            probed, embedded = probe(lib, p)
+            probed, embedded = probe(lib, p, a.st_size)
             info = probed | {"size": a.st_size, "mtime": float(a.st_mtime)}
             if t is None:
                 t = Track(path=url, folder=str(p.parent.relative_to(lib.root)), filename=p.name)
@@ -185,7 +252,10 @@ def pull(lib: Library, url: str) -> Path:
 
 
 def drop(local: Path) -> None:
+    """Remove the pulled copy and anything written beside it - the .lrc sidecar the writer produces
+    here has already been pushed to the server, and was otherwise left behind on every remote track."""
     local.unlink(missing_ok=True)
+    local.with_suffix(".lrc").unlink(missing_ok=True)
 
 
 def push(lib: Library, local: Path, target: PurePosixPath) -> paramiko.SFTPAttributes:
