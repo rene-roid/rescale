@@ -25,24 +25,30 @@ Demucs + WhisperX. The lyrics land in each file's own tag, ready for Navidrome.
 
 <table>
 <tr>
-<td colspan="2">
+<td colspan="3">
 
-**Library** — every track, its status, confidence, and which path picked it up
-<img src="docs/screenshots/dashboard.png" alt="Track list" />
+**Library** — every track, its status, confidence and which path picked it up, next to the player and its live-highlighting lyrics
+<img src="docs/screenshots/dashboard.png" alt="Track list and detail panel" />
 
 </td>
 </tr>
 <tr>
-<td width="50%">
-
-**Online path** — LRCLIB match, measured speed ratio and offset, synced lyrics
-<img src="docs/screenshots/player.png" alt="Online match detail" />
-
-</td>
-<td width="50%">
+<td width="33%">
 
 **AI path** — Whisper language, alignment score, transcribed and force-aligned lyrics
 <img src="docs/screenshots/ai-path.png" alt="AI transcription detail" />
+
+</td>
+<td width="33%">
+
+**Already done** — a scan that found synced lyrics already on the file leaves it alone, and still plays them
+<img src="docs/screenshots/player.png" alt="Adopted lyrics detail" />
+
+</td>
+<td width="33%">
+
+**Libraries** — local folders and SFTP boxes, each scanned and scoped separately
+<img src="docs/screenshots/libraries.png" alt="Libraries dialog" />
 
 </td>
 </tr>
@@ -56,7 +62,7 @@ A synced lyric file is a list of timestamps, and those timestamps only mean some
 
 ```
 scan ──> decide ──┬── online ──> LRCLIB lookup ──> verify against the audio ──> rescale ──┐
-                  │                                                                       ├──> <track>.lrc
+                  │                                                                       ├──> lyrics tag / .lrc
                   └── ai ──────> Demucs vocals ──> WhisperX ──> forced alignment ─────────┘
 ```
 
@@ -85,7 +91,7 @@ fit — all of it falls through to the AI path instead of writing garbage.
 - ⏭ **Nothing done twice** — a scan notices tracks that already carry synced lyrics, from an earlier run or from the source, and leaves them alone
 - 🖥 **Web UI** — browse by status, filter by path, play a track with its lyrics highlighting live, click a line to seek, reprocess in one click
 - 🌐 **Remote libraries** — point it at `sftp://user@host/music` and it processes a NAS or Navidrome box over the network, pushing the lyrics back
-- 🔒 **Read-only library** — the *only* thing ever written into your music tree is the `.lrc` sidecar, atomically
+- 🔒 **Read-only library** — the *only* thing ever written into your music tree is the lyrics: into the file's own tag, backed up and verified, or as an atomically-written `.lrc` sidecar
 - 🐳 **Docker + GPU** — CUDA 12.8 image, or drop the GPU block and run on CPU
 - 📦 **All state in `data/`** — db, LRCLIB cache, model weights, vocal stems, logs, one folder, delete it to start over
 
@@ -124,10 +130,13 @@ CLI, `rescale scan --root /path/to/music` points the first local library somewhe
 `rescale libraries` prints them. `RESCALE_LIBRARY_ROOT=/music` overrides the first local one, which is
 how the Docker image finds its mount.
 
-**Remote libraries** are for a Navidrome box whose music lives on another machine. Tags are read over
-the wire; each track is then pulled into `data/remote/`, processed, and the result pushed back over the
-original. Every `[library] poll_minutes` (15 by default) each remote library is re-walked for new
-files — they appear as `pending` and stay there, since nothing reaches the GPU until you run it.
+**Remote libraries** are for a Navidrome box whose music lives on another machine. Scanning one never
+downloads it: tags live at the head and tail of an audio file, so the scanner fetches just those two
+windows per track rather than streaming the audio. A track is only pulled into `data/remote/` when it
+is actually processed, and the result is pushed back over the original. Every `[library] poll_minutes`
+(15 by default) each remote library is re-walked for new files — they appear as `pending` and stay
+there, since nothing reaches the GPU until you run it. The UI player streams remote tracks by byte
+range, so seeking doesn't wait on the whole file.
 
 ## Commands
 
@@ -196,7 +205,7 @@ slower per track on the AI path.
 
 ## Project Structure
 
-One uv workspace package per pipeline stage, ~1100 lines total.
+One uv workspace package per pipeline stage, ~1900 lines across them.
 
 ```
 rescale/
