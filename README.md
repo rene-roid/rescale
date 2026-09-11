@@ -175,7 +175,7 @@ and are re-downloaded if removed.
 | `GET` | `/api/tracks?status=&q=` | list, filterable by status and path substring |
 | — | *(every route above takes `?lib=<id>` to scope it to one library)* | |
 | `GET` | `/api/tracks/{id}` | one track with its lyrics |
-| `GET` | `/api/tracks/{id}/audio` | stream the file, for the UI player |
+| `GET` | `/api/tracks/{id}/audio` | stream the file for the UI player, byte ranges and all, remote tracks included |
 | `POST` | `/api/tracks/{id}/reprocess?path=auto\|online\|ai` | requeue one track on a given path |
 | `POST` | `/api/run?status=pending\|failed\|needs-review\|all` | kick the background worker |
 | `POST` | `/api/scan` | rescan one library, or all of them |

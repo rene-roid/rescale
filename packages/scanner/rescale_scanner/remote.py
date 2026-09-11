@@ -251,6 +251,21 @@ def pull(lib: Library, url: str) -> Path:
     return dest
 
 
+def read_bytes(lib: Library, p: PurePosixPath, start: int, end: int) -> bytes:
+    """Bytes [start, end] inclusive of a remote file, for serving HTTP range requests. readv pipelines
+    the request instead of paying a round trip per block."""
+    with client(lib).open(str(p), "rb", bufsize=1 << 16) as f:
+        return b"".join(f.readv([(start, end - start + 1)]))
+
+
+def read_all(lib: Library, p: PurePosixPath, size: int, chunk: int = 1 << 18):
+    """The whole file, streamed, for a client that asked without a Range header."""
+    with client(lib).open(str(p), "rb", bufsize=chunk) as f:
+        f.prefetch(size)
+        while data := f.read(chunk):
+            yield data
+
+
 def drop(local: Path) -> None:
     """Remove the pulled copy and anything written beside it - the .lrc sidecar the writer produces
     here has already been pushed to the server, and was otherwise left behind on every remote track."""

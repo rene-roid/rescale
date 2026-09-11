@@ -161,3 +161,22 @@ def test_the_window_reports_the_real_size_and_eofs_inside_the_audio():
     assert w.seek(0) == 0 and w.read(4) == b"HEAD"
     assert w.seek(996) == 996 and w.read(4) == b"TAIL"
     assert w.seek(500) == 500 and w.read(10) == b""  # the audio stream: EOF, never a network read
+
+
+@pytest.mark.parametrize("header, expected", [
+    ("bytes=0-",          (0, 999)),    # what a browser sends first for an <audio> element
+    ("bytes=100-199",     (100, 199)),
+    ("bytes=500-99999",   (500, 999)),  # past the end: clamped, not an error
+    ("bytes=-128",        (872, 999)),  # a suffix range, counted back from the end
+    ("bytes=0-0",         (0, 0)),
+    ("bytes=0-, 500-600", (0, 999)),    # multi-range: only the first is served
+    (None,                None),        # no header at all: send the whole file
+    ("",                  None),
+    ("seconds=1-2",       None),
+    ("bytes=abc",         None),
+])
+def test_range_header_parsing(header, expected):
+    """Remote playback hangs off this: a misparsed offset serves the wrong bytes, which the browser
+    decodes as noise rather than reporting as an error."""
+    from rescale_api.app import byte_range
+    assert byte_range(header, 1000) == expected

@@ -7,8 +7,8 @@ import threading
 import time
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import Body, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from rescale_core import (REPO_ROOT, Library, Track, config, get_library, in_library,
                           libraries, new_id, save_libraries, session)
@@ -166,18 +166,47 @@ def track(i: int) -> dict:
     return _get(i).as_dict()
 
 
+# One range response is capped at this; the player asks for the next window as it plays. Keeping each
+# response small keeps the SFTP read inside a single request instead of a generator that outlives it.
+RANGE_WINDOW = 4 << 20
+
+
+def byte_range(header: str | None, size: int) -> tuple[int, int] | None:
+    """Parse a `Range: bytes=...` header into an inclusive (start, end). None = send the whole file."""
+    if not header or not header.strip().startswith("bytes="):
+        return None
+    first = header.split("=", 1)[1].split(",")[0].strip()
+    lo, _, hi = first.partition("-")
+    try:
+        if not lo:  # "bytes=-500": the last 500 bytes
+            return max(0, size - int(hi)), size - 1
+        return int(lo), min(int(hi), size - 1) if hi else size - 1
+    except ValueError:
+        return None
+
+
 @app.get("/api/tracks/{i}/audio")
-def audio(i: int):
+def audio(i: int, request: Request):
+    """Stream a track for the UI player. Remote ones are served straight off the server a range at a
+    time, so the player can show a duration and seek - clicking a lyric line - without first pulling
+    the whole file down."""
     t = _get(i)
     if not remote.is_remote(t.path):
-        return FileResponse(t.path)  # read-only streaming of the library file
-    # ponytail: no Range support over SFTP, so the browser buffers the whole file before it can seek.
-    def chunks():
-        with remote.client(remote.owner(t.path)).open(str(remote.path_of(t.path)), "rb") as f:
-            f.prefetch()
-            while data := f.read(1 << 16):
-                yield data
-    return StreamingResponse(chunks(), media_type=mimetypes.guess_type(t.filename)[0] or "audio/mpeg")
+        return FileResponse(t.path)  # starlette serves ranges for local files itself
+    lib, path = remote.owner(t.path), remote.path_of(t.path)
+    size = t.size or remote.client(lib).stat(str(path)).st_size
+    media = mimetypes.guess_type(t.filename)[0] or "audio/mpeg"
+    rng = byte_range(request.headers.get("range"), size)
+    if rng is None:
+        return StreamingResponse(remote.read_all(lib, path, size), media_type=media,
+                                 headers={"Accept-Ranges": "bytes", "Content-Length": str(size)})
+    start, end = rng
+    if start >= size or start > end:
+        return Response(status_code=416, headers={"Content-Range": f"bytes */{size}"})
+    body = remote.read_bytes(lib, path, start, min(end, start + RANGE_WINDOW - 1))
+    return Response(body, status_code=206, media_type=media,
+                    headers={"Accept-Ranges": "bytes",
+                             "Content-Range": f"bytes {start}-{start + len(body) - 1}/{size}"})
 
 
 @app.post("/api/tracks/{i}/reprocess")
