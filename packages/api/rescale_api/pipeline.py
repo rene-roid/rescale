@@ -1,13 +1,16 @@
 """Orchestration: pick a path per track, run it, write the sidecar, record status in the DB."""
 from __future__ import annotations
 
+import collections
 import json
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rescale_core import Track, config, data_dir, session
+from rescale_core import STATUSES, Library, Track, config, data_dir, in_library, session
 from rescale_matcher import candidates, lyric_similarity, parse
+from rescale_scanner import remote
 from rescale_rescaler import build, fit, lines, rescale
 from rescale_writer import can_embed, embed_lyrics, write_lrc
 
@@ -30,7 +33,33 @@ def decide(t: Track) -> str:
     return "online"
 
 
-def run_online(t: Track, p) -> tuple[str, str, float, dict] | None:
+@contextmanager
+def _localized(t: Track):
+    """Yield a local file for the track. Everything downstream (whisper, demucs, the writer) needs a real
+    path, so an sftp:// track is pulled down first and the copy is dropped again afterwards."""
+    if not remote.is_remote(t.path):
+        yield Path(t.path)
+        return
+    local = remote.pull(remote.owner(t.path), t.path)
+    try:
+        yield local
+    finally:
+        remote.drop(local)
+
+
+def _drop_stem(audio: Path) -> None:
+    """Throw away the vocal stem now the track is done with it, unless it is being kept on purpose."""
+    if config()["transcriber"]["keep_stems"]:
+        return
+    try:
+        from rescale_transcriber import drop_stem  # module import is light; torch loads on first use
+        if freed := drop_stem(audio):
+            log.debug("  freed %.0f MB of stem", freed / 2**20)
+    except Exception:  # a stem we cannot delete is not a reason to fail a track that succeeded
+        log.debug("  could not drop the stem for %s", audio, exc_info=True)
+
+
+def run_online(t: Track, p, audio: Path) -> tuple[str, str, float, dict] | None:
     cfg = config()["matcher"]
     cands = candidates(p, t.duration)[:3]
     if not cands:
@@ -40,15 +69,16 @@ def run_online(t: Track, p) -> tuple[str, str, float, dict] | None:
     if cfg["verify"]:
         # Listen before trusting a title match: overlap between what Whisper hears and each candidate's lyrics.
         from rescale_transcriber import observed_lines
-        obs = observed_lines(Path(t.path))
+        obs = observed_lines(audio)
         heard = " ".join(x for _, x in obs)
         for m in cands:
             m.lyric_sim = lyric_similarity(heard, m.record["plainLyrics"])
         cands.sort(key=lambda m: (-(m.lyric_sim or 0), -m.confidence))
         m = cands[0]
         log.info("  candidates: %s", [(c.record["trackName"], c.record["artistName"], c.confidence, c.lyric_sim) for c in cands])
+        info["heard"] = heard[:400]
         if (m.lyric_sim or 0) < cfg["min_lyric_sim"]:
-            return None
+            return None  # what the audio says is not this song at all
         conf = 0.5 * m.confidence + 0.5 * min(1.0, m.lyric_sim / 0.5)
         f = fit(lines(m.record["syncedLyrics"]), obs)
         info["fit"] = f
@@ -74,14 +104,18 @@ def run_online(t: Track, p) -> tuple[str, str, float, dict] | None:
     lrc = build(lines(rescale(r["syncedLyrics"], ratio, offset)), title=r["trackName"], artist=r["artistName"])
     conf = round(min(1.0, conf), 3)
     status = "matched-online" if conf >= cfg["accept"] else "needs-review"
+    if (m.lyric_sim or 1.0) < cfg["review_lyric_sim"]:
+        # Heard enough to rule out a different song, not enough to trust it: write it, but flag it.
+        # info["heard"] is in the detail pane next to the lyrics so the call is yours, not a threshold's.
+        status = "needs-review"
     info.update({"lrclib_id": r["id"], "track": r["trackName"], "artist": r["artistName"], "album": r.get("albumName"),
                  "orig_duration": r["duration"], "ratio": ratio, "offset": offset, "title_sim": m.title_sim, "lyric_sim": m.lyric_sim})
     return lrc, status, conf, info
 
 
-def run_ai(t: Track, p) -> tuple[str, str, float, dict]:
+def run_ai(t: Track, p, audio: Path) -> tuple[str, str, float, dict]:
     from rescale_transcriber import transcribe_to_lrc  # heavy import, only when needed
-    lrc, info = transcribe_to_lrc(Path(t.path), p.title, p.artist or t.tag_artist)
+    lrc, info = transcribe_to_lrc(audio, p.title, p.artist or t.tag_artist)
     status = "ai-transcribed" if info["score"] >= config()["transcriber"]["review_below"] else "needs-review"
     return lrc, status, info["score"], info
 
@@ -92,6 +126,20 @@ def write_lyrics(audio: Path, lrc: str, embed: bool) -> Path:
     if embed and can_embed(audio):
         return embed_lyrics(audio, lrc)
     return write_lrc(audio, lrc)
+
+
+def _write(t: Track, audio: Path, lrc: str, embed: bool) -> None:
+    """Write the lyrics next to (or into) the track, pushing the result back to the server for remote ones."""
+    written = write_lyrics(audio, lrc, embed)
+    embedded = written.name == audio.name  # else it is the .lrc sidecar beside it
+    if remote.is_remote(t.path):
+        original = remote.path_of(t.path)  # the local copy is named by hash, so the target comes from the url
+        st = remote.push(remote.owner(t.path), written,
+                         original if embedded else original.with_suffix(written.suffix))
+    else:
+        st = written.stat()
+    if embedded:  # the audio file itself changed: record its new size+mtime or the next scan re-queues it
+        t.size, t.mtime = st.st_size, float(st.st_mtime)
 
 
 def process(track_id: int, embed: bool | None = None) -> Track:
@@ -105,17 +153,21 @@ def process(track_id: int, embed: bool | None = None) -> Track:
         log.info("[%s] %s/%s  title=%r artist=%r variant=%s cover=%s", path, t.folder, t.filename, p.title, p.artist, p.is_variant, p.is_cover)
         fatal = None
         try:
-            result = None
-            if path == "online":
-                result = run_online(t, p)
-                if result is None and t.path_pref == "auto":
-                    path = "ai"
-            if path == "ai":
-                result = run_ai(t, p)
-            if result is None:
-                raise LookupError("no online lyrics match (path preference is online-only)")
-            lrc, status, conf, info = result
-            write_lyrics(Path(t.path), lrc, embed)
+            with _localized(t) as audio:
+                try:
+                    result = None
+                    if path == "online":
+                        result = run_online(t, p, audio)
+                        if result is None and t.path_pref == "auto":
+                            path = "ai"
+                    if path == "ai":
+                        result = run_ai(t, p, audio)
+                    if result is None:
+                        raise LookupError("no online lyrics match (path preference is online-only)")
+                    lrc, status, conf, info = result
+                    _write(t, audio, lrc, embed)
+                finally:
+                    _drop_stem(audio)
             t.lyrics, t.status, t.confidence, t.match_info, t.error = lrc, status, conf, json.dumps(info), None
             t.lrc_written_at = datetime.now(timezone.utc)
             log.info("  -> %s conf=%s %s", status, conf, info)
@@ -132,9 +184,10 @@ def process(track_id: int, embed: bool | None = None) -> Track:
         return t
 
 
-def select_ids(statuses=("pending",), contains: str | None = None, limit: int | None = None) -> list[int]:
+def select_ids(statuses=("pending",), lib: Library | None = None, contains: str | None = None,
+               limit: int | None = None) -> list[int]:
     with session() as db:
-        q = db.query(Track.id).filter(Track.status.in_(statuses)).order_by(Track.folder, Track.filename)
+        q = in_library(db.query(Track.id), lib).filter(Track.status.in_(statuses)).order_by(Track.folder, Track.filename)
         if contains:
             q = q.filter(Track.path.contains(contains))
         if limit:
@@ -156,6 +209,9 @@ def set_preference(pref: str, contains: str | None = None) -> int:
         return n
 
 
-def counts() -> dict:
+def counts(lib: Library | None = None) -> dict:
+    """Per-status totals for one library, or the whole DB when none is given."""
     with session() as db:
-        return {s: db.query(Track).filter(Track.status == s).count() for s in ("pending", "matched-online", "ai-transcribed", "needs-review", "failed")}
+        rows = in_library(db.query(Track.status), lib)
+        n = collections.Counter(s for (s,) in rows)
+        return {s: n.get(s, 0) for s in STATUSES}

@@ -6,11 +6,15 @@
 data_dir = "data/"
 
 [library]
-# READ ONLY. The only thing ever written here is a `<basename>.lrc` sidecar next to each audio file.
-# Just the default: `rescale scan --root ...` or the web UI overrides it (stored in data/config/library_root).
+# READ ONLY. The only thing ever written here is the lyrics, as a sidecar or in the file's own tag.
+# Only seeds the first library: the real list (local folders + SFTP ones) lives in data/config/libraries.json,
+# managed from the web UI. `rescale scan --root ...` repoints the first local one.
 root = "/home/yuuki/Music"
 extensions = [".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus"]
 skip_dirs = [".mp3thumb_backup"]
+# How often remote (SFTP) libraries are re-walked in the background for new files. They only ever land as
+# `pending` - nothing is sent to the GPU until you press run.
+poll_minutes = 15
 
 [matcher]
 # Online (LRCLIB) match confidence: >= accept -> matched-online; >= review -> needs-review; else AI path.
@@ -24,7 +28,11 @@ cover_words = ["cover", "remix", "swing arrangement", "switching vocals", "rock 
 # time mapping (speed + trim) from it instead of trusting the duration ratio. Costs ~10 s/track on a GPU;
 # turn off on a CPU-only box to keep the online path instant (then variants use the duration ratio).
 verify = true
-min_lyric_sim = 0.25
+# What the transcript has to share with a candidate's lyrics. Below min_lyric_sim it is a different song
+# and the track falls through to the AI path; between the two it is written but flagged `needs-review`,
+# with the transcript kept in match_info so the UI can show you what it actually heard.
+min_lyric_sim = 0.15
+review_lyric_sim = 0.25
 # Which path shifted variants prefer when no explicit per-track preference is set: "online" (fetch + rescale) or "ai".
 variant_default_path = "online"
 
@@ -40,13 +48,17 @@ batch_size = 8            # VRAM knob: whisper batches share the card with demuc
 # this list falls back to the first entry. One entry skips detection entirely.
 languages = ["en", "ja"]
 demucs_model = "htdemucs"
+# Keep each track's separated vocal stem in data/stems/ after it has been transcribed. They are
+# uncompressed wav - a few hundred MB each, tens of GB over a library - and are only worth keeping if
+# you are re-running transcription repeatedly over the same tracks and want to skip Demucs each time.
+keep_stems = false
 # Mean word alignment score below this -> needs-review instead of ai-transcribed.
 review_below = 0.55
 
 [writer]
-# Instead of a `<basename>.lrc` sidecar, embed lyrics into an ID3 USLT frame on the audio file itself
-# (what Navidrome reads). Only mp3/wav support this; other formats still get the .lrc sidecar.
-embed = false
+# Write lyrics into the audio file's own tag (what Navidrome reads) instead of a `<basename>.lrc` sidecar:
+# ID3 USLT for mp3/wav, LYRICS for flac/ogg/opus, ©lyr for m4a. Anything else falls back to the sidecar.
+embed = true
 
 [api]
 host = "0.0.0.0"

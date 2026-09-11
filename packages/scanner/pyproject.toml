@@ -4,7 +4,10 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "rescale-core",
+    "rescale-writer",
     "mutagen>=1.47",
+    "paramiko>=5.0.0",
+    "fusepy>=3.0.1",
 ]
 
 [build-system]
@@ -16,3 +19,4 @@ packages = ["rescale_scanner"]
 
 [tool.uv.sources]
 rescale-core = { workspace = true }
+rescale-writer = { workspace = true }

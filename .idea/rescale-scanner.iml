@@ -4,5 +4,6 @@
     <content url="file://$MODULE_DIR$/packages/scanner" />
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="module" module-name="rescale-core" exported="" />
+    <orderEntry type="module" module-name="rescale-writer" exported="" />
   </component>
 </module>

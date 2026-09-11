@@ -6,9 +6,9 @@
 
 **Every track in your library gets synced lyrics. No exceptions.**
 
-Point it at your music folder — it scans, finds synced lyrics online, rescales the timestamps for
-nightcore and sped-up edits, and transcribes the rest locally with Demucs + WhisperX. Out comes a
-`.lrc` sidecar next to every file, ready for Navidrome.
+Point it at your music folders — local or over SFTP — and it scans, finds synced lyrics online,
+rescales the timestamps for nightcore and sped-up edits, and transcribes the rest locally with
+Demucs + WhisperX. The lyrics land in each file's own tag, ready for Navidrome.
 
 [![Python](https://img.shields.io/badge/Python-3.12-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/packaging-uv-de5fe9?logo=uv&logoColor=white)](https://docs.astral.sh/uv/)
@@ -82,7 +82,9 @@ fit — all of it falls through to the AI path instead of writing garbage.
 - 🧠 **Local transcription** — Demucs `htdemucs` + WhisperX `large-v3` with word-level forced alignment, no API keys, nothing leaves the box
 - 🔍 **Filename parsing** — strips `(Lyrics)`, `[Official Video]`, uploader suffixes and the rest of the YouTube-rip noise
 - 📊 **Confidence gating** — low-confidence results land in `needs-review` instead of silently shipping wrong lyrics
+- ⏭ **Nothing done twice** — a scan notices tracks that already carry synced lyrics, from an earlier run or from the source, and leaves them alone
 - 🖥 **Web UI** — browse by status, filter by path, play a track with its lyrics highlighting live, click a line to seek, reprocess in one click
+- 🌐 **Remote libraries** — point it at `sftp://user@host/music` and it processes a NAS or Navidrome box over the network, pushing the lyrics back
 - 🔒 **Read-only library** — the *only* thing ever written into your music tree is the `.lrc` sidecar, atomically
 - 🐳 **Docker + GPU** — CUDA 12.8 image, or drop the GPU block and run on CPU
 - 📦 **All state in `data/`** — db, LRCLIB cache, model weights, vocal stems, logs, one folder, delete it to start over
@@ -104,19 +106,34 @@ fit — all of it falls through to the AI path instead of writing garbage.
 uv sync                       # ~5 GB: torch cu128 + whisperx + demucs
 uv run rescale scan --report  # dry run: extensions, tag quality, sample rows
 uv run rescale scan           # populate data/db/rescale.sqlite3
-uv run rescale run --limit 5  # process 5 tracks, write .lrc sidecars
+uv run rescale run --limit 5  # process 5 tracks, write their lyrics
 uv run rescale run            # everything pending (models download on the first AI track)
 uv run rescale serve          # http://localhost:8765
 ```
 
-Point it at your music with `rescale scan --root /path/to/music` (scanned recursively, remembered
-afterwards, and editable from the box next to *rescan library* in the web UI). `config/default.toml`
-holds the default; `RESCALE_LIBRARY_ROOT=/music` overrides both.
+### Libraries
+
+*libraries…* in the web UI manages the list: a local folder, or `sftp://user@nas/mnt/data/music` with
+a username and password. Each one is walked recursively and scanned separately, and the library picker
+scopes everything downstream — the track list, the per-status counts, and every run button. Which
+tracks belong to which library is derived from their path, so adding a folder adopts whatever was
+already scanned under it.
+
+The list lives in `data/config/libraries.json` (mode `0600`, since SFTP passwords are in it). From the
+CLI, `rescale scan --root /path/to/music` points the first local library somewhere else, and
+`rescale libraries` prints them. `RESCALE_LIBRARY_ROOT=/music` overrides the first local one, which is
+how the Docker image finds its mount.
+
+**Remote libraries** are for a Navidrome box whose music lives on another machine. Tags are read over
+the wire; each track is then pulled into `data/remote/`, processed, and the result pushed back over the
+original. Every `[library] poll_minutes` (15 by default) each remote library is re-walked for new
+files — they appear as `pending` and stay there, since nothing reaches the GPU until you run it.
 
 ## Commands
 
 ```sh
 uv run rescale status                               # counts per status
+uv run rescale libraries                            # the configured libraries
 uv run rescale run --retry-failed --redo-review     # widen what "run" picks up
 uv run rescale run --filter "Will Stetson"          # only paths containing a substring
 uv run rescale prefer ai --filter "nightcore is B)" # force a path, mark those tracks pending
@@ -124,7 +141,27 @@ uv run pytest
 ```
 
 **Statuses:** `pending` → `matched-online` | `ai-transcribed` | `needs-review` (written, but below
-the accept threshold) | `failed`. Re-runs skip everything that isn't pending.
+the accept threshold, or the transcript only half-agreed with it) | `failed`. Re-runs skip everything
+that isn't pending.
+
+`has-lyrics` is the sixth: the file already had synced lyrics when it was scanned, so there is nothing
+to do. Scanning checks the file's lyrics tag and any `.lrc` beside it, and adopts what it finds —
+whether Rescale wrote it on an earlier run (the `[re:Rescale]` stamp says which) or the file came with
+it. Unsynced lyrics don't count: a plain lyric dump is what Rescale exists to replace. This is what
+stops a cleared database, a restored backup or an rsync from putting a whole library back through the
+GPU; to redo one anyway, use *reprocess* on the track.
+
+**Where the lyrics go:** into the audio file's own lyrics tag by default — `USLT` for mp3/wav, `LYRICS`
+for flac/ogg/opus, `©lyr` for m4a — which is what Navidrome reads. Untick *embed into file* in the UI
+(or set `[writer] embed = false`) to get a `<basename>.lrc` sidecar instead. Embedding backs the file
+up, and for mp3 checks the audio stream is byte-for-byte identical afterwards, before dropping the backup.
+
+**Disk:** the only thing `data/` keeps per track is its row in SQLite — lyrics, timings, match details.
+The separated vocal stem is deleted once the track has been transcribed; they are uncompressed wav,
+a few hundred MB each, and kept for a whole library they run to tens of GB. Set
+`[transcriber] keep_stems = true` if you are re-running transcription over the same tracks repeatedly
+and want to skip Demucs each time. Model weights in `data/models/` are the other big folder (~13 GB)
+and are re-downloaded if removed.
 
 **Config:** `config/default.toml`. Any key overrides via `RESCALE_<SECTION>_<KEY>` —
 `RESCALE_LIBRARY_ROOT=/music`, `RESCALE_TRANSCRIBER_DEVICE=cpu`,
@@ -136,11 +173,15 @@ the accept threshold) | `failed`. Re-runs skip everything that isn't pending.
 |---|---|---|
 | `GET` | `/api/stats` | counts per status |
 | `GET` | `/api/tracks?status=&q=` | list, filterable by status and path substring |
+| — | *(every route above takes `?lib=<id>` to scope it to one library)* | |
 | `GET` | `/api/tracks/{id}` | one track with its lyrics |
-| `GET` | `/api/tracks/{id}/audio` | stream the file, for the UI player |
+| `GET` | `/api/tracks/{id}/audio` | stream the file for the UI player, byte ranges and all, remote tracks included |
 | `POST` | `/api/tracks/{id}/reprocess?path=auto\|online\|ai` | requeue one track on a given path |
-| `POST` | `/api/run?status=pending\|failed\|needs-review` | kick the background worker |
-| `POST` | `/api/scan` | rescan the library |
+| `POST` | `/api/run?status=pending\|failed\|needs-review\|all` | kick the background worker |
+| `POST` | `/api/scan` | rescan one library, or all of them |
+| `GET` | `/api/libraries` | the configured libraries, without their passwords |
+| `POST` | `/api/libraries` | `{url, name, username, password, auto_scan}`: add or edit one, validated before it is saved |
+| `DELETE` | `/api/libraries/{id}` | forget a library and the tracks scanned from it |
 
 ## Docker
 
@@ -148,7 +189,8 @@ the accept threshold) | `failed`. Re-runs skip everything that isn't pending.
 docker compose up -d --build
 ```
 
-Edit the library path in `compose.yaml`. On a machine without an NVIDIA GPU, drop the
+Edit the library mount in `compose.yaml` (`RESCALE_LIBRARY_ROOT` already points at where it lands).
+On a machine without an NVIDIA GPU, drop the
 `deploy.resources` block and set `RESCALE_TRANSCRIBER_DEVICE=cpu` — expect roughly real-time or
 slower per track on the AI path.
 
@@ -159,15 +201,15 @@ One uv workspace package per pipeline stage, ~1100 lines total.
 ```
 rescale/
 ├── packages/
-│   ├── core/          # config loading + SQLModel schema + session
+│   ├── core/          # config + library registry + SQLModel schema + session
 │   ├── scanner/       # read-only library walk, tag reading, upsert
 │   ├── matcher/       # filename/tag parsing, LRCLIB search + cache, similarity scoring
 │   ├── rescaler/      # pure timestamp math: parse, fit speed/offset, rescale, rebuild
 │   ├── transcriber/   # Demucs stem separation, WhisperX transcribe + align
-│   ├── writer/        # atomic .lrc sidecar write
+│   ├── writer/        # atomic sidecar write + embedded lyrics tags
 │   └── api/           # pipeline orchestration, CLI, FastAPI app
 ├── frontend/          # index.html: track list, player, live-highlighting lyrics
 ├── config/            # default.toml
 ├── tests/
-└── data/              # db, caches, model weights, stems, logs (gitignored)
+└── data/              # db, caches, model weights, logs (gitignored)
 ```

@@ -47,11 +47,27 @@ def _separator():
     return Separator(model=config()["transcriber"]["demucs_model"], device=device())
 
 
-def separate_vocals(audio: Path) -> Path:
-    """Isolated vocal stem as wav in data/stems/, keyed by path+mtime so re-runs are free."""
+def stem_path(audio: Path) -> Path:
+    """Where this track's vocal stem lives, keyed by path+size+mtime."""
     st = audio.stat()
     key = hashlib.sha1(f"{audio}|{st.st_size}|{st.st_mtime}".encode()).hexdigest()
-    out = data_dir("stems") / f"{key}.wav"
+    return data_dir("stems") / f"{key}.wav"
+
+
+def drop_stem(audio: Path) -> int:
+    """Delete a track's stem once it has been transcribed. Demucs writes an uncompressed wav - a few
+    hundred MB for a long track - and nothing downstream needs it again, so keeping every one of them
+    costs tens of GB to save a re-separation that only happens if you reprocess the track."""
+    stem = stem_path(audio)
+    n = stem.stat().st_size if stem.exists() else 0
+    stem.unlink(missing_ok=True)
+    return n
+
+
+def separate_vocals(audio: Path) -> Path:
+    """Isolated vocal stem as wav in data/stems/, keyed by path+mtime so a re-run inside the same
+    track (online verification, then the AI path) reuses it."""
+    out = stem_path(audio)
     if out.exists():
         return out
     from demucs.api import save_audio

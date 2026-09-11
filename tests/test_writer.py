@@ -1,8 +1,11 @@
 import os
+import shutil
+import subprocess
 
+import mutagen
 import pytest
 from mutagen.id3 import ID3
-from rescale_writer import can_embed, embed_lyrics, lrc_path
+from rescale_writer import can_embed, embed_lyrics, existing_lyrics, is_synced, lrc_path, write_lrc
 
 LRC = "[ti:Faded]\n[00:12.50]You were the shadow to my light\n"
 
@@ -35,8 +38,28 @@ def test_embed_preserves_audio_and_writes_uslt(tmp_path, tagged):
 
 
 def test_can_embed():
-    assert can_embed(pytest.importorskip("pathlib").Path("x.mp3"))
-    assert not can_embed(pytest.importorskip("pathlib").Path("x.flac"))
+    from pathlib import Path
+    assert all(can_embed(Path("x" + e)) for e in (".mp3", ".flac", ".ogg", ".opus", ".m4a"))
+    assert not can_embed(Path("x.wma"))
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
+@pytest.mark.parametrize("ext, key", [(".flac", "lyrics"), (".ogg", "lyrics"), (".opus", "lyrics"),
+                                      (".m4a", "\xa9lyr")])
+def test_embed_round_trips_every_non_id3_format(tmp_path, ext, key):
+    """The formats that used to fall back to a sidecar. A real container, so this fails if mutagen
+    cannot actually carry the tag rather than only if the dispatch picks the wrong key."""
+    p = tmp_path / ("song" + ext)
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-y", str(p)], check=True)
+
+    assert embed_lyrics(p, LRC) == p
+
+    f = mutagen.File(p)
+    assert f[key][0] == LRC
+    assert f.info.length > 0  # still a playable file, not a tag with debris attached
+    assert not lrc_path(p).exists()
+    assert not (p.parent / f".{p.name}.rescale-bak").exists()
 
 
 def test_embed_restores_backup_on_failure(tmp_path, monkeypatch):
@@ -51,3 +74,35 @@ def test_embed_restores_backup_on_failure(tmp_path, monkeypatch):
 
     assert p.read_bytes() == before
     assert not (p.parent / f".{p.name}.rescale-bak").exists()
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
+@pytest.mark.parametrize("ext", [".mp3", ".flac", ".ogg", ".opus", ".m4a"])
+def test_lyrics_written_into_a_file_are_found_again(tmp_path, ext):
+    """Every format we embed into, we must be able to read back - otherwise a rescan re-runs the
+    whole library through the GPU to redo work that is already sitting in the files."""
+    p = tmp_path / ("song" + ext)
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-y", str(p)], check=True)
+    assert existing_lyrics(p) is None
+
+    embed_lyrics(p, LRC)
+    assert existing_lyrics(p) == (LRC, "embedded")
+
+
+def test_a_sidecar_counts_too_and_plain_lyrics_do_not(tmp_path):
+    p = _fake_mp3(tmp_path, tagged=False)
+    assert existing_lyrics(p) is None
+
+    write_lrc(p, "these are just the words\nwith no timestamps at all\n")
+    assert existing_lyrics(p) is None  # unsynced: exactly what Rescale exists to replace
+
+    write_lrc(p, LRC)
+    assert existing_lyrics(p) == (LRC, "sidecar")
+
+
+def test_is_synced():
+    assert is_synced("[00:12.50]a line")
+    assert is_synced("[ti:Faded]\n[00:12.50]a line")
+    assert not is_synced("[ti:Faded]\njust words")
+    assert not is_synced("") and not is_synced(None)
