@@ -50,3 +50,11 @@ def test_lyric_similarity_discriminates_songs():
     heard = "baby i'm wasted all i wanna do is drive home to you baby i'm faded"
     assert lyric_similarity(heard, zhu) > 0.8
     assert lyric_similarity(heard, alan) < 0.25
+
+
+def test_parse_keeps_which_variant_word_matched():
+    # "nightcore" and "slowed" are opposite directions, so the tagger needs the word, not just the flag.
+    assert parse("Nightcore - 7 Rings (Lyrics)", "x.mp3").variant_word == "nightcore"
+    assert parse("Some Song (slowed + reverb)", "x.mp3").variant_word == "slowed"
+    p = parse("Ordinary Song", "x.mp3")
+    assert p.variant_word is None and p.is_variant is False

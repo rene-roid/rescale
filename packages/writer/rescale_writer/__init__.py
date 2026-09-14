@@ -6,11 +6,12 @@ import os
 import re
 import shutil
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import mutagen
-from mutagen.id3 import ID3, ID3NoHeaderError, USLT
-from mutagen.mp4 import MP4
+from mutagen.id3 import ID3, ID3NoHeaderError, TBPM, TCON, TMOO, USLT
+from mutagen.mp4 import MP4, MP4FreeForm
 
 # One lyrics tag per container family, all of which Navidrome reads.
 ID3_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aif"}          # USLT frame
@@ -106,9 +107,18 @@ def _id3_span(data: bytes) -> tuple[int, int]:
     return head, tail
 
 
+def _verify_stream(audio: Path, before: bytes) -> None:
+    """Check that only the tag changed: an ID3 rewrite moves the audio stream, and a mangled one is a
+    corrupted music file, not a failed tag write."""
+    after = audio.read_bytes()
+    bh, bt = _id3_span(before)
+    ah, at = _id3_span(after)
+    if before[bh:len(before) - bt] != after[ah:len(after) - at]:
+        raise RuntimeError(f"audio stream changed while writing tags into {audio}")
+
+
 def _embed_id3(audio: Path, lrc: str) -> None:
-    """USLT frame, plus a check that only the tag changed: an ID3 rewrite moves the audio stream, and
-    a mangled one is a corrupted music file, not a failed lyric write."""
+    """USLT frame, plus the stream check."""
     before = audio.read_bytes()
     try:
         tags = ID3(audio)
@@ -117,12 +127,7 @@ def _embed_id3(audio: Path, lrc: str) -> None:
     tags.delall("USLT")
     tags.add(USLT(encoding=3, lang="und", desc="", text=lrc))
     tags.save(audio, v2_version=3)
-
-    after = audio.read_bytes()
-    bh, bt = _id3_span(before)
-    ah, at = _id3_span(after)
-    if before[bh:len(before) - bt] != after[ah:len(after) - at]:
-        raise RuntimeError(f"audio stream changed while embedding lyrics into {audio}")
+    _verify_stream(audio, before)
 
 
 def _embed_tag(audio: Path, key: str, lrc: str) -> None:
@@ -136,22 +141,89 @@ def _embed_tag(audio: Path, key: str, lrc: str) -> None:
     f.save()
 
 
-def embed_lyrics(audio: Path, lrc: str) -> Path:
-    """Write `lrc` into the audio file's own lyrics tag instead of a sidecar (what Navidrome reads).
-    Backs the file up first and restores it if anything goes wrong."""
-    ext = audio.suffix.lower()
-    if ext not in EMBEDDABLE:
-        raise ValueError(f"no lyrics tag known for {ext} files")
+@contextmanager
+def _guarded(audio: Path):
+    """Back the file up for the length of a tag write and put it back if anything goes wrong.
+    A failed tag write must never leave a damaged music file behind."""
     backup = audio.with_name(f".{audio.name}.rescale-bak")
     shutil.copy2(audio, backup)
     try:
-        if ext in ID3_EXTENSIONS:
-            _embed_id3(audio, lrc)
-        else:
-            _embed_tag(audio, "\xa9lyr" if ext in MP4_EXTENSIONS else "lyrics", lrc)
+        yield
     except BaseException:
         shutil.copy2(backup, audio)
         raise
     finally:
         backup.unlink(missing_ok=True)
+
+
+def embed_lyrics(audio: Path, lrc: str) -> Path:
+    """Write `lrc` into the audio file's own lyrics tag instead of a sidecar (what Navidrome reads)."""
+    ext = audio.suffix.lower()
+    if ext not in EMBEDDABLE:
+        raise ValueError(f"no lyrics tag known for {ext} files")
+    with _guarded(audio):
+        if ext in ID3_EXTENSIONS:
+            _embed_id3(audio, lrc)
+        else:
+            _embed_tag(audio, "\xa9lyr" if ext in MP4_EXTENSIONS else "lyrics", lrc)
+    return audio
+
+
+# Navidrome's tag map (resources/mappings.yaml) reads genre/mood as multi-valued, split on ";", "/",
+# ",", and bpm as a plain number: TCON/TMOO/TBPM for ID3, "genre"/"mood"/"bpm" Vorbis comments,
+# @gen/freeform-mood/tmpo for MP4. Writing each as a real list (not a joined string) is the
+# spec-correct multi-value form in every one of those containers, so nothing needs re-splitting.
+_MP4_MOOD_ATOM = "----:com.apple.itunes:mood"
+
+
+def embed_tags(audio: Path, genres: list[str], moods: list[str], bpm: float | None) -> Path:
+    """Write genre, mood and tempo into the file's own tags, in whatever field Navidrome reads each
+    from. Every container has first-class genre/bpm fields, so mutagen's easy interface covers those
+    for everything except wav/aiff - raw ID3 frames living in a RIFF chunk, never a bare ID3 save: a
+    tag written straight to a wav lands ahead of the RIFF header and nothing can read it afterwards.
+    Mood has no easy MP4 key (no native atom for it), so m4a goes through the freeform atom directly."""
+    ext = audio.suffix.lower()
+    if ext not in EMBEDDABLE:
+        raise ValueError(f"no genre/mood/bpm tags known for {ext} files")
+    if not (genres or moods or bpm):
+        return audio
+    bpm_s = str(round(bpm)) if bpm else None
+    with _guarded(audio):
+        riff = ext in ID3_EXTENSIONS and ext != ".mp3"
+        before = audio.read_bytes() if ext == ".mp3" else b""
+        if riff:
+            f = mutagen.File(audio)
+            if f.tags is None:
+                f.add_tags()
+            if genres:
+                f.tags.setall("TCON", [TCON(encoding=3, text=genres)])
+            if moods:
+                f.tags.setall("TMOO", [TMOO(encoding=3, text=moods)])
+            if bpm_s:
+                f.tags.setall("TBPM", [TBPM(encoding=3, text=[bpm_s])])
+        elif ext in MP4_EXTENSIONS:
+            f = MP4(audio)
+            if f.tags is None:
+                f.add_tags()
+            if genres:
+                f["\xa9gen"] = genres
+            if moods:
+                f[_MP4_MOOD_ATOM] = [MP4FreeForm(m.encode()) for m in moods]
+            if bpm_s:
+                f["tmpo"] = [round(bpm)]
+        else:
+            f = mutagen.File(audio, easy=True)
+            if f is None:
+                raise RuntimeError(f"mutagen does not recognise {audio}")
+            if f.tags is None:
+                f.add_tags()
+            if genres:
+                f["genre"] = genres
+            if moods:
+                f["mood"] = moods
+            if bpm_s:
+                f["bpm"] = [bpm_s]
+        f.save()
+        if before:
+            _verify_stream(audio, before)
     return audio

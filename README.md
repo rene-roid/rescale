@@ -146,6 +146,8 @@ uv run rescale libraries                            # the configured libraries
 uv run rescale run --retry-failed --redo-review     # widen what "run" picks up
 uv run rescale run --filter "Will Stetson"          # only paths containing a substring
 uv run rescale prefer ai --filter "nightcore is B)" # force a path, mark those tracks pending
+uv run rescale tag --limit 20                       # AI audio tags: genre, mood, tempo, variant
+uv run rescale tag --retag --filter "nightcore"     # re-tag after editing the labels in config
 uv run pytest
 ```
 
@@ -164,6 +166,13 @@ GPU; to redo one anyway, use *reprocess* on the track.
 for flac/ogg/opus, `©lyr` for m4a — which is what Navidrome reads. Untick *embed into file* in the UI
 (or set `[writer] embed = false`) to get a `<basename>.lrc` sidecar instead. Embedding backs the file
 up, and for mp3 checks the audio stream is byte-for-byte identical afterwards, before dropping the backup.
+
+**Where the audio tags go:** genre, mood, tempo and the variant call live in the database and show up in
+the detail pane. With *embed into file* ticked, genre/mood/bpm also go into the file's own tags - `TCON`/
+`TMOO`/`TBPM` for ID3, `genre`/`mood`/`bpm` Vorbis comments, the `©gen` atom + a freeform atom + `tmpo` for
+MP4 - each written as a real multi-value field, which is what [Navidrome's tag map](https://github.com/navidrome/navidrome/blob/master/resources/mappings.yaml)
+reads genre and mood as. The variant call has no matching field in any of these formats, so it stays
+database-only. `[tagger] embed` is the default for `rescale tag` when no flag is given.
 
 **Disk:** the only thing `data/` keeps per track is its row in SQLite — lyrics, timings, match details.
 The separated vocal stem is deleted once the track has been transcribed; they are uncompressed wav,
@@ -215,6 +224,7 @@ rescale/
 │   ├── matcher/       # filename/tag parsing, LRCLIB search + cache, similarity scoring
 │   ├── rescaler/      # pure timestamp math: parse, fit speed/offset, rescale, rebuild
 │   ├── transcriber/   # Demucs stem separation, WhisperX transcribe + align
+│   ├── tagger/        # CLAP zero-shot genre/mood tags, librosa tempo, variant call
 │   ├── writer/        # atomic sidecar write + embedded lyrics tags
 │   └── api/           # pipeline orchestration, CLI, FastAPI app
 ├── frontend/          # index.html: track list, player, live-highlighting lyrics

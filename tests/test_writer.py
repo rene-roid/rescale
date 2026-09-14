@@ -5,7 +5,8 @@ import subprocess
 import mutagen
 import pytest
 from mutagen.id3 import ID3
-from rescale_writer import can_embed, embed_lyrics, existing_lyrics, is_synced, lrc_path, write_lrc
+from rescale_writer import (can_embed, embed_lyrics, embed_tags, existing_lyrics, is_synced,
+                            lrc_path, write_lrc)
 
 LRC = "[ti:Faded]\n[00:12.50]You were the shadow to my light\n"
 
@@ -106,3 +107,40 @@ def test_is_synced():
     assert is_synced("[ti:Faded]\n[00:12.50]a line")
     assert not is_synced("[ti:Faded]\njust words")
     assert not is_synced("") and not is_synced(None)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
+@pytest.mark.parametrize("ext", [".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav"])
+def test_embed_tags_round_trips_and_leaves_the_file_playable(tmp_path, ext):
+    """Genre, mood and bpm into a real container, decoded again afterwards. The wav case is the one
+    that matters: an ID3 tag written straight to a wav lands ahead of the RIFF header and ffmpeg stops
+    reading it - every other format already had an easy path, wav does not."""
+    p = tmp_path / ("song" + ext)
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-y", str(p)], check=True)
+
+    assert embed_tags(p, ["nightcore", "hyperpop"], ["energetic", "uplifting"], 154.4) == p
+
+    if ext in (".mp3", ".wav"):
+        tags = mutagen.File(p).tags
+        genre, mood, bpm = tags.getall("TCON")[0].text, tags.getall("TMOO")[0].text, tags.getall("TBPM")[0].text
+    elif ext == ".m4a":
+        f = mutagen.File(p)
+        genre, bpm = f["\xa9gen"], [str(v) for v in f["tmpo"]]
+        mood = [v.decode() for v in f["----:com.apple.itunes:mood"]]
+    else:
+        f = mutagen.File(p, easy=True)
+        genre, mood, bpm = f["genre"], f["mood"], f["bpm"]
+    assert list(genre) == ["nightcore", "hyperpop"]
+    assert list(mood) == ["energetic", "uplifting"]
+    assert list(bpm) == ["154"]  # rounded: none of these fields carry fractional BPM
+    assert subprocess.run(["ffmpeg", "-v", "error", "-i", str(p), "-f", "null", "-"],
+                          capture_output=True).returncode == 0
+    assert not (p.parent / f".{p.name}.rescale-bak").exists()
+
+
+def test_embed_tags_is_a_no_op_with_nothing_to_write(tmp_path):
+    p = _fake_mp3(tmp_path, tagged=False)
+    before = p.read_bytes()
+    assert embed_tags(p, [], [], None) == p
+    assert p.read_bytes() == before

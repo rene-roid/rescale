@@ -8,11 +8,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from rescale_core import STATUSES, Library, Track, config, data_dir, in_library, session
+from sqlalchemy import select
+
+from rescale_core import STATUSES, Library, Track, TrackTags, config, data_dir, in_library, session
 from rescale_matcher import candidates, lyric_similarity, parse
 from rescale_scanner import remote
 from rescale_rescaler import build, fit, lines, rescale
-from rescale_writer import can_embed, embed_lyrics, write_lrc
+from rescale_writer import can_embed, embed_lyrics, embed_tags, write_lrc
 
 log = logging.getLogger("rescale")
 
@@ -215,3 +217,67 @@ def counts(lib: Library | None = None) -> dict:
         rows = in_library(db.query(Track.status), lib)
         n = collections.Counter(s for (s,) in rows)
         return {s: n.get(s, 0) for s in STATUSES}
+
+
+# ---- tagging -------------------------------------------------------------------------------------
+
+
+def tag_track(track_id: int, embed: bool | None = None) -> TrackTags:
+    """AI audio tags for one track. Its own pass, not part of process(): what a track sounds like has
+    nothing to do with whether its lyrics were found, and the tracks that already carry lyrics want
+    tags just as much as the pending ones. With `embed`, the genres also go into the file's own tag."""
+    if embed is None:
+        embed = config()["tagger"]["embed"]
+    with session() as db:
+        t = db.get(Track, track_id)
+        ratio = json.loads(t.match_info).get("ratio") if t.match_info else None
+        # Parsed here rather than read off the row: Track.is_variant is only filled in by process(),
+        # and a track can be tagged long before (or without) its lyrics ever being looked up.
+        named = parse(t.tag_title, t.filename, t.tag_artist, t.folder).variant_word
+        log.info("[tag] %s/%s%s", t.folder, t.filename, f" ({named})" if named else "")
+        row = db.get(TrackTags, track_id)
+        if row is None:
+            row = TrackTags(track_id=track_id)
+            db.add(row)
+        fatal = None
+        try:
+            from rescale_tagger import tag  # heavy import, only when needed
+            with _localized(t) as audio:  # a remote track's local copy only exists inside this block
+                r = tag(audio, named=named, ratio=ratio)
+                if embed and can_embed(audio):
+                    embed_tags(audio, [g for g, _ in r["genres"]], [m for m, _ in r["moods"]], r["bpm"])
+                    st = (remote.push(remote.owner(t.path), audio, remote.path_of(t.path))
+                          if remote.is_remote(t.path) else audio.stat())
+                    t.size, t.mtime = st.st_size, float(st.st_mtime)  # else the next scan re-queues it
+            row.genres, row.moods = json.dumps(r["genres"]), json.dumps(r["moods"])
+            row.bpm, row.variant, row.speed = r["bpm"], r["variant"], r["speed"]
+            row.model, row.error = r["model"], None
+            log.info("  -> %s %s bpm %s", [g for g, _ in r["genres"]], r["bpm"], r["variant"] or "")
+        except Exception as e:  # noqa: BLE001 - one bad track must not stop the batch
+            log.exception("  -> tagging failed: %s", e)
+            row.error = f"{type(e).__name__}: {e}"
+            fatal = e if "cuda" in str(e).lower() else None  # a dead GPU fails every later track too
+        db.commit()
+        if fatal:
+            raise RuntimeError(f"GPU is unusable in this process ({fatal}) - stopping. Restart and re-run `tag`.") from fatal
+        return row
+
+
+def select_untagged(lib: Library | None = None, contains: str | None = None, limit: int | None = None,
+                    retag: bool = False) -> list[int]:
+    """Tracks with no tags yet. A row that failed is not "tagged", so it comes back on the next run."""
+    with session() as db:
+        q = in_library(db.query(Track.id), lib).order_by(Track.folder, Track.filename)
+        if not retag:
+            q = q.filter(Track.id.notin_(select(TrackTags.track_id).where(TrackTags.error.is_(None))))
+        if contains:
+            q = q.filter(Track.path.contains(contains))
+        if limit:
+            q = q.limit(limit)
+        return [i for (i,) in q]
+
+
+def tags_of(track_id: int) -> dict | None:
+    with session() as db:
+        row = db.get(TrackTags, track_id)
+        return row.as_dict() if row else None

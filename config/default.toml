@@ -60,6 +60,41 @@ review_below = 0.55
 # ID3 USLT for mp3/wav, LYRICS for flac/ogg/opus, ©lyr for m4a. Anything else falls back to the sidecar.
 embed = true
 
+[tagger]
+# Zero-shot audio tagging: genre/mood come from CLAP, tempo from librosa. The candidate labels below
+# ARE the taxonomy - CLAP scores the audio against whatever strings you write here, so a subgenre no
+# classifier was ever trained on works the same as "pop". Edit the lists to match your library; there
+# is nothing to retrain. Runs as its own pass (`rescale tag`), never as part of the lyrics run.
+# Any CLAP checkpoint. Not laion/larger_clap_music: its audio and text towers do not share a space in
+# transformers (every track embeds ~0.96 alike and scores ~0.00 against every label), so it tags nothing.
+model = "laion/larger_clap_music_and_speech"
+device = "auto"      # auto | cuda | cpu
+windows = 5          # 10 s excerpts spread across the track, averaged. More = steadier on a remix that changes character, and slower.
+top_k = 3            # most labels kept per group
+min_score = 0.10     # and only those holding this share of the group's probability mass
+temperature = 20.0   # how sharply scores separate. Raise for one confident label, lower to see more of the field.
+# Tempo a track needs before the audio-side guess is willing to call something nightcore. Ignored when
+# the lyrics pipeline measured a real speed ratio against the matched original - that always wins.
+nightcore_bpm = 150
+# Tempo is reported inside this range, doubling or halving to get there. Half-time and double-time are
+# genuinely ambiguous in audio, and a trap-beat nightcore rip reads as 77 BPM as readily as 154; this
+# picks the octave rather than leaving it to the track. Widen the low end if your library has real ballads.
+bpm_range = [80.0, 175.0]
+genres = ["nightcore", "vocaloid", "j-pop", "j-rock", "anime opening", "city pop", "k-pop",
+          "pop", "pop punk", "rock", "metal", "acoustic", "piano ballad", "orchestral", "folk",
+          "indie", "jazz", "classical", "country", "hip hop", "rap", "r&b", "lo-fi hip hop",
+          "electronic", "edm", "future bass", "dubstep", "drum and bass", "hardstyle", "phonk",
+          "hyperpop", "house", "techno", "trance", "synthwave", "chiptune"]
+moods = ["energetic", "aggressive", "happy", "uplifting", "melancholic", "sad", "dreamy",
+         "relaxed", "dark", "romantic", "epic", "playful", "tense", "nostalgic"]
+# Write genre, mood and tempo into the file's own tags - TCON/TMOO/TBPM for ID3, "genre"/"mood"/"bpm"
+# Vorbis comments, @gen/a freeform atom/tmpo for MP4 - which is what Navidrome reads genre and mood
+# from (both multi-valued there) and bpm from. The variant call (nightcore/sped-up/...) has no matching
+# field in any of these formats, so it only ever lives in the database. This is only the default for
+# `rescale tag`: the web UI's "embed into file" checkbox and the CLI's --embed/--no-embed override it.
+# Off here so the library stays read-only apart from lyrics until you ask otherwise.
+embed = false
+
 [api]
 host = "0.0.0.0"
 port = 8765

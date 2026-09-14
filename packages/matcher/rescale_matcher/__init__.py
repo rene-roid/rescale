@@ -32,11 +32,16 @@ class Parsed:
     hints: list[str] = field(default_factory=list)  # possible artists / sources pulled from brackets and " | " parts
     is_variant: bool = False
     is_cover: bool = False
+    variant_word: str | None = None  # which one matched: "nightcore" and "slowed" are opposite directions
+
+
+def _first(words: list[str], s: str) -> str | None:
+    s = s.lower()
+    return next((w for w in words if w in s), None)
 
 
 def _has(words: list[str], s: str) -> bool:
-    s = s.lower()
-    return any(w in s for w in words)
+    return _first(words, s) is not None
 
 
 def parse(title: str | None, filename: str, tag_artist: str | None = None, folder: str = "") -> Parsed:
@@ -44,7 +49,8 @@ def parse(title: str | None, filename: str, tag_artist: str | None = None, folde
     variant_words, cover_words = cfg["variant_words"], cfg["cover_words"]
     raw = (title or re.sub(r"\.[^.]+$", "", filename)).replace("_", " ")
     raw = unicodedata.normalize("NFKC", raw)
-    flags = {"variant": any(_has(variant_words, x) for x in (raw, filename, folder)), "cover": _has(cover_words, raw)}
+    word = next((w for x in (raw, filename, folder) if (w := _first(variant_words, x))), None)
+    flags = {"variant": word is not None, "cover": _has(cover_words, raw)}
     hints: list[str] = []
     if BUT.search(raw):
         flags["cover"] = True
@@ -78,7 +84,7 @@ def parse(title: str | None, filename: str, tag_artist: str | None = None, folde
     main = LEAD_JUNK.sub("", re.sub(r"\s{2,}", " ", main)).strip()
     if tag_artist:
         hints.append(tag_artist)
-    return Parsed(main, artist, [h for h in hints if h], flags["variant"], flags["cover"])
+    return Parsed(main, artist, [h for h in hints if h], flags["variant"], flags["cover"], word)
 
 
 def norm(s: str) -> str:
