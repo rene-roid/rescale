@@ -168,9 +168,11 @@ for flac/ogg/opus, `©lyr` for m4a — which is what Navidrome reads. Untick *em
 up, and for mp3 checks the audio stream is byte-for-byte identical afterwards, before dropping the backup.
 
 **Where the audio tags go:** genre, mood, tempo and the variant call live in the database and show up in
-the detail pane. With *embed into file* ticked they also go into the file's own genre tag (`TCON`, or the
-container's equivalent), which is what Navidrome groups by; mood and tempo stay in the database, having no
-standard field to land in. `[tagger] embed` is the default for `rescale tag` when no flag is given.
+the detail pane. With *embed into file* ticked, genre/mood/bpm also go into the file's own tags - `TCON`/
+`TMOO`/`TBPM` for ID3, `genre`/`mood`/`bpm` Vorbis comments, the `©gen` atom + a freeform atom + `tmpo` for
+MP4 - each written as a real multi-value field, which is what [Navidrome's tag map](https://github.com/navidrome/navidrome/blob/master/resources/mappings.yaml)
+reads genre and mood as. The variant call has no matching field in any of these formats, so it stays
+database-only. `[tagger] embed` is the default for `rescale tag` when no flag is given.
 
 **Disk:** the only thing `data/` keeps per track is its row in SQLite — lyrics, timings, match details.
 The separated vocal stem is deleted once the track has been transcribed; they are uncompressed wav,

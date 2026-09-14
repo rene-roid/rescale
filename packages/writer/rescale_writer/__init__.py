@@ -10,8 +10,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import mutagen
-from mutagen.id3 import ID3, ID3NoHeaderError, TCON, USLT
-from mutagen.mp4 import MP4
+from mutagen.id3 import ID3, ID3NoHeaderError, TBPM, TCON, TMOO, USLT
+from mutagen.mp4 import MP4, MP4FreeForm
 
 # One lyrics tag per container family, all of which Navidrome reads.
 ID3_EXTENSIONS = {".mp3", ".wav", ".aiff", ".aif"}          # USLT frame
@@ -169,28 +169,60 @@ def embed_lyrics(audio: Path, lrc: str) -> Path:
     return audio
 
 
-def embed_genres(audio: Path, genres: list[str]) -> Path:
-    """Write the genre tag - the field Navidrome groups by. Every container has a first-class genre
-    field, so mutagen's easy interface covers them all except wav and aiff, whose tags are raw ID3
-    frames living in a RIFF chunk. Those go through mutagen's container class, never a bare ID3 save:
-    an ID3 tag written straight to a wav lands in front of the RIFF header and nothing can read it."""
+# Navidrome's tag map (resources/mappings.yaml) reads genre/mood as multi-valued, split on ";", "/",
+# ",", and bpm as a plain number: TCON/TMOO/TBPM for ID3, "genre"/"mood"/"bpm" Vorbis comments,
+# @gen/freeform-mood/tmpo for MP4. Writing each as a real list (not a joined string) is the
+# spec-correct multi-value form in every one of those containers, so nothing needs re-splitting.
+_MP4_MOOD_ATOM = "----:com.apple.itunes:mood"
+
+
+def embed_tags(audio: Path, genres: list[str], moods: list[str], bpm: float | None) -> Path:
+    """Write genre, mood and tempo into the file's own tags, in whatever field Navidrome reads each
+    from. Every container has first-class genre/bpm fields, so mutagen's easy interface covers those
+    for everything except wav/aiff - raw ID3 frames living in a RIFF chunk, never a bare ID3 save: a
+    tag written straight to a wav lands ahead of the RIFF header and nothing can read it afterwards.
+    Mood has no easy MP4 key (no native atom for it), so m4a goes through the freeform atom directly."""
     ext = audio.suffix.lower()
     if ext not in EMBEDDABLE:
-        raise ValueError(f"no genre tag known for {ext} files")
-    if not genres:
+        raise ValueError(f"no genre/mood/bpm tags known for {ext} files")
+    if not (genres or moods or bpm):
         return audio
+    bpm_s = str(round(bpm)) if bpm else None
     with _guarded(audio):
         riff = ext in ID3_EXTENSIONS and ext != ".mp3"
         before = audio.read_bytes() if ext == ".mp3" else b""
-        f = mutagen.File(audio) if riff else mutagen.File(audio, easy=True)
-        if f is None:
-            raise RuntimeError(f"mutagen does not recognise {audio}")
-        if f.tags is None:
-            f.add_tags()
         if riff:
-            f.tags.setall("TCON", [TCON(encoding=3, text=genres)])
+            f = mutagen.File(audio)
+            if f.tags is None:
+                f.add_tags()
+            if genres:
+                f.tags.setall("TCON", [TCON(encoding=3, text=genres)])
+            if moods:
+                f.tags.setall("TMOO", [TMOO(encoding=3, text=moods)])
+            if bpm_s:
+                f.tags.setall("TBPM", [TBPM(encoding=3, text=[bpm_s])])
+        elif ext in MP4_EXTENSIONS:
+            f = MP4(audio)
+            if f.tags is None:
+                f.add_tags()
+            if genres:
+                f["\xa9gen"] = genres
+            if moods:
+                f[_MP4_MOOD_ATOM] = [MP4FreeForm(m.encode()) for m in moods]
+            if bpm_s:
+                f["tmpo"] = [round(bpm)]
         else:
-            f["genre"] = genres
+            f = mutagen.File(audio, easy=True)
+            if f is None:
+                raise RuntimeError(f"mutagen does not recognise {audio}")
+            if f.tags is None:
+                f.add_tags()
+            if genres:
+                f["genre"] = genres
+            if moods:
+                f["mood"] = moods
+            if bpm_s:
+                f["bpm"] = [bpm_s]
         f.save()
         if before:
             _verify_stream(audio, before)
