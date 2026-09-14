@@ -243,6 +243,31 @@ class Track(Base):
         return d
 
 
+class TrackTags(Base):
+    """What the audio itself sounds like, from `rescale tag`. Its own table, not columns on Track:
+    create_all() makes a missing table but never alters an existing one, so this needs no migration -
+    and tagging is a separate pass, so it must not disturb a track's lyrics status."""
+
+    __tablename__ = "track_tags"
+
+    track_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    genres: Mapped[str | None] = mapped_column(Text)  # JSON [[label, score], ...], best first
+    moods: Mapped[str | None] = mapped_column(Text)
+    bpm: Mapped[float | None] = mapped_column(Float)
+    variant: Mapped[str | None] = mapped_column(String)  # nightcore | sped-up | slowed | shifted
+    speed: Mapped[float | None] = mapped_column(Float)  # playback speed vs the original, when it was measured
+    model: Mapped[str | None] = mapped_column(String)
+    error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def as_dict(self) -> dict:
+        d = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
+        for k in ("genres", "moods"):
+            d[k] = json.loads(d[k]) if d[k] else []
+        return d
+
+
 def in_library(query, lib: Library | None):
     """Scope a Track query to one library, by path prefix. None = every library."""
     return query.filter(Track.path.startswith(lib.prefix, autoescape=True)) if lib else query

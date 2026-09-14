@@ -11,6 +11,7 @@ dependencies = [
     "rescale-rescaler",
     "rescale-transcriber",
     "rescale-writer",
+    "rescale-tagger",
     "rescale-api",
 ]
 
@@ -30,6 +31,7 @@ rescale-matcher = { workspace = true }
 rescale-rescaler = { workspace = true }
 rescale-transcriber = { workspace = true }
 rescale-writer = { workspace = true }
+rescale-tagger = { workspace = true }
 rescale-api = { workspace = true }
 
 [tool.pytest.ini_options]

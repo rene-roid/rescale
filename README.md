@@ -146,6 +146,8 @@ uv run rescale libraries                            # the configured libraries
 uv run rescale run --retry-failed --redo-review     # widen what "run" picks up
 uv run rescale run --filter "Will Stetson"          # only paths containing a substring
 uv run rescale prefer ai --filter "nightcore is B)" # force a path, mark those tracks pending
+uv run rescale tag --limit 20                       # AI audio tags: genre, mood, tempo, variant
+uv run rescale tag --retag --filter "nightcore"     # re-tag after editing the labels in config
 uv run pytest
 ```
 
@@ -215,6 +217,7 @@ rescale/
 │   ├── matcher/       # filename/tag parsing, LRCLIB search + cache, similarity scoring
 │   ├── rescaler/      # pure timestamp math: parse, fit speed/offset, rescale, rebuild
 │   ├── transcriber/   # Demucs stem separation, WhisperX transcribe + align
+│   ├── tagger/        # CLAP zero-shot genre/mood tags, librosa tempo, variant call
 │   ├── writer/        # atomic sidecar write + embedded lyrics tags
 │   └── api/           # pipeline orchestration, CLI, FastAPI app
 ├── frontend/          # index.html: track list, player, live-highlighting lyrics
