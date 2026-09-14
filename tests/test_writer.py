@@ -5,7 +5,8 @@ import subprocess
 import mutagen
 import pytest
 from mutagen.id3 import ID3
-from rescale_writer import can_embed, embed_lyrics, existing_lyrics, is_synced, lrc_path, write_lrc
+from rescale_writer import (can_embed, embed_genres, embed_lyrics, existing_lyrics, is_synced,
+                            lrc_path, write_lrc)
 
 LRC = "[ti:Faded]\n[00:12.50]You were the shadow to my light\n"
 
@@ -106,3 +107,30 @@ def test_is_synced():
     assert is_synced("[ti:Faded]\n[00:12.50]a line")
     assert not is_synced("[ti:Faded]\njust words")
     assert not is_synced("") and not is_synced(None)
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
+@pytest.mark.parametrize("ext", [".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav"])
+def test_embed_genres_round_trips_and_leaves_the_file_playable(tmp_path, ext):
+    """Genres into a real container, decoded again afterwards. The wav case is the one that matters:
+    an ID3 tag written straight to a wav lands ahead of the RIFF header and ffmpeg stops reading it."""
+    p = tmp_path / ("song" + ext)
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-y", str(p)], check=True)
+
+    assert embed_genres(p, ["nightcore", "hyperpop"]) == p
+
+    f = mutagen.File(p)
+    read_back = f.tags.getall("TCON")[0].text if ext in (".mp3", ".wav") else f[
+        "\xa9gen" if ext == ".m4a" else "genre"]
+    assert list(read_back) == ["nightcore", "hyperpop"]
+    assert subprocess.run(["ffmpeg", "-v", "error", "-i", str(p), "-f", "null", "-"],
+                          capture_output=True).returncode == 0
+    assert not (p.parent / f".{p.name}.rescale-bak").exists()
+
+
+def test_embed_genres_is_a_no_op_without_genres(tmp_path):
+    p = _fake_mp3(tmp_path, tagged=False)
+    before = p.read_bytes()
+    assert embed_genres(p, []) == p
+    assert p.read_bytes() == before

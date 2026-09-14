@@ -18,7 +18,8 @@ from rescale_api import pipeline
 
 app = FastAPI(title="Rescale")
 # ponytail: one worker thread, one GPU, in-memory queue. Lost on restart; pending rows are re-queued by /api/run.
-_queue: queue.Queue[tuple[int, bool | None]] = queue.Queue()
+# Lyrics and tagging share it rather than running in parallel: both want the whole card to themselves.
+_queue: queue.Queue[tuple[str, int, bool | None]] = queue.Queue()  # (job, track id, embed)
 _current: dict = {"id": None}
 _worker_error: dict = {"msg": None}
 
@@ -28,10 +29,10 @@ RUN_STATUSES = {"pending": ["pending"], "failed": ["failed"], "needs-review": ["
 
 def _worker() -> None:
     while True:
-        i, embed = _queue.get()
+        job, i, embed = _queue.get()
         _current["id"] = i
         try:
-            pipeline.process(i, embed=embed)
+            pipeline.tag_track(i, embed=embed) if job == "tag" else pipeline.process(i, embed=embed)
         except Exception:  # process() only re-raises for a dead GPU; every queued track would fail too
             pipeline.log.exception("worker stopped; restart the server to process the rest")
             _worker_error["msg"] = "GPU error - restart the server, then re-run the failed tracks"
@@ -163,7 +164,7 @@ def _get(i: int) -> Track:
 
 @app.get("/api/tracks/{i}")
 def track(i: int) -> dict:
-    return _get(i).as_dict()
+    return _get(i).as_dict() | {"tags": pipeline.tags_of(i)}
 
 
 # One range response is capped at this; the player asks for the next window as it plays. Keeping each
@@ -217,8 +218,15 @@ def reprocess(i: int, path: str = Query("auto", pattern="^(auto|online|ai)$"), e
             raise HTTPException(404)
         t.path_pref, t.status, t.error = path, "pending", None
         db.commit()
-    _queue.put((i, embed))
+    _queue.put(("process", i, embed))
     return {"queued": i, "path": path, "embed": embed}
+
+
+@app.post("/api/tracks/{i}/retag")
+def retag(i: int, embed: bool | None = None) -> dict:
+    _get(i)
+    _queue.put(("tag", i, embed))
+    return {"queued": i, "job": "tag", "embed": embed}
 
 
 @app.post("/api/run")
@@ -227,7 +235,16 @@ def run(status: str = Query("pending", pattern="^(pending|failed|needs-review|al
     """Queue everything in one status (or `all`: pending + failed + needs-review) for one library."""
     ids = pipeline.select_ids(RUN_STATUSES[status], _lib(lib))
     for i in ids:
-        _queue.put((i, embed))
+        _queue.put(("process", i, embed))
+    return {"queued": len(ids)}
+
+
+@app.post("/api/tag")
+def tag(lib: str | None = None, retag: bool = False, embed: bool | None = None) -> dict:
+    """Queue the audio tagger over everything untagged in one library (or everything, with retag)."""
+    ids = pipeline.select_untagged(_lib(lib), retag=retag)
+    for i in ids:
+        _queue.put(("tag", i, embed))
     return {"queued": len(ids)}
 
 

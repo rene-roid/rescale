@@ -25,6 +25,9 @@ def main() -> None:
     g.add_argument("--filter", help="only tracks whose path contains this substring")
     g.add_argument("--limit", type=int)
     g.add_argument("--retag", action="store_true", help="also re-tag tracks that already have tags")
+    g.add_argument("--embed", action="store_true", default=None,
+                   help="also write the genres into each file's own genre tag (default: config [tagger] embed)")
+    g.add_argument("--no-embed", dest="embed", action="store_false", help="only record tags in the database")
     p = sub.add_parser("prefer", help="set the path preference for tracks and mark them pending")
     p.add_argument("path", choices=["auto", "online", "ai"])
     p.add_argument("--filter", help="only tracks whose path contains this substring")
@@ -57,7 +60,7 @@ def main() -> None:
         ids = pipeline.select_untagged(contains=a.filter, limit=a.limit, retag=a.retag)
         print(f"{len(ids)} tracks to tag")
         for n, i in enumerate(ids, 1):
-            r = pipeline.tag_track(i)
+            r = pipeline.tag_track(i, embed=a.embed)
             labels = ", ".join(f"{lbl} {sc}" for lbl, sc in json.loads(r.genres or "[]"))
             print(f"[{n}/{len(ids)}] " + (f"FAILED {r.error}" if r.error else
                                           f"{r.bpm:>5} bpm  {r.variant or '-':9} {labels}"))

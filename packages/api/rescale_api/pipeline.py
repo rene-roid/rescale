@@ -14,7 +14,7 @@ from rescale_core import STATUSES, Library, Track, TrackTags, config, data_dir, 
 from rescale_matcher import candidates, lyric_similarity, parse
 from rescale_scanner import remote
 from rescale_rescaler import build, fit, lines, rescale
-from rescale_writer import can_embed, embed_lyrics, write_lrc
+from rescale_writer import can_embed, embed_genres, embed_lyrics, write_lrc
 
 log = logging.getLogger("rescale")
 
@@ -222,10 +222,12 @@ def counts(lib: Library | None = None) -> dict:
 # ---- tagging -------------------------------------------------------------------------------------
 
 
-def tag_track(track_id: int) -> TrackTags:
+def tag_track(track_id: int, embed: bool | None = None) -> TrackTags:
     """AI audio tags for one track. Its own pass, not part of process(): what a track sounds like has
     nothing to do with whether its lyrics were found, and the tracks that already carry lyrics want
-    tags just as much as the pending ones."""
+    tags just as much as the pending ones. With `embed`, the genres also go into the file's own tag."""
+    if embed is None:
+        embed = config()["tagger"]["embed"]
     with session() as db:
         t = db.get(Track, track_id)
         ratio = json.loads(t.match_info).get("ratio") if t.match_info else None
@@ -240,8 +242,13 @@ def tag_track(track_id: int) -> TrackTags:
         fatal = None
         try:
             from rescale_tagger import tag  # heavy import, only when needed
-            with _localized(t) as audio:
+            with _localized(t) as audio:  # a remote track's local copy only exists inside this block
                 r = tag(audio, named=named, ratio=ratio)
+                if embed and r["genres"] and can_embed(audio):
+                    embed_genres(audio, [g for g, _ in r["genres"]])
+                    st = (remote.push(remote.owner(t.path), audio, remote.path_of(t.path))
+                          if remote.is_remote(t.path) else audio.stat())
+                    t.size, t.mtime = st.st_size, float(st.st_mtime)  # else the next scan re-queues it
             row.genres, row.moods = json.dumps(r["genres"]), json.dumps(r["moods"])
             row.bpm, row.variant, row.speed = r["bpm"], r["variant"], r["speed"]
             row.model, row.error = r["model"], None

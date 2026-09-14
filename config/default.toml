@@ -87,8 +87,9 @@ genres = ["nightcore", "vocaloid", "j-pop", "j-rock", "anime opening", "city pop
           "hyperpop", "house", "techno", "trance", "synthwave", "chiptune"]
 moods = ["energetic", "aggressive", "happy", "uplifting", "melancholic", "sad", "dreamy",
          "relaxed", "dark", "romantic", "epic", "playful", "tense", "nostalgic"]
-# Write the top genre into the audio file's own genre tag. Off by default: the library stays read-only
-# apart from lyrics until you decide otherwise.
+# Write the genres into the audio file's own genre tag (TCON, what Navidrome groups by). This is only
+# the default for `rescale tag`: the web UI's "embed into file" checkbox and the CLI's --embed/--no-embed
+# both override it. Off here so the library stays read-only apart from lyrics until you ask otherwise.
 embed = false
 
 [api]

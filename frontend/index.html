@@ -91,6 +91,9 @@
   .tag.processing { background:var(--ai); animation:pulse 1.2s ease-in-out infinite; }
   .tag.ghost { background:transparent; border:1px solid var(--line); color:var(--mute); font-weight:500; }
   .tag.ghost::before { display:none; }
+  .tag.audio { background:transparent; border:1px dashed var(--line); color:var(--fg); font-weight:500; }
+  .tag.audio::before { display:none; }
+  .tag.audio .pc { color:var(--mute); font-weight:400; margin-left:.35em; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:.45; } }
 
   #progress {
@@ -188,7 +191,7 @@
     <input id="q" placeholder="filter by path…" size="26">
     <span id="progress"></span>
     <span class="spacer"></span>
-    <label class="check" title="Write lyrics into the file's own lyrics tag rather than a .lrc sidecar next to it">
+    <label class="check" title="Write into the file's own tags: lyrics instead of a .lrc sidecar, and the genres from the audio tagger">
       <input type="checkbox" id="embed"> embed into file
     </label>
   </div>
@@ -201,6 +204,7 @@
       <button id="btn-failed">retry failed</button>
       <button id="btn-review">retry review</button>
       <button id="btn-all">retry all</button>
+      <button id="btn-tag" title="Analyse every untagged track for genre, mood and tempo">tag untagged</button>
     </div>
   </div>
 </header>
@@ -227,6 +231,7 @@
       <button onclick="reprocess('auto')">reprocess</button>
       <button onclick="reprocess('online')">force online</button>
       <button onclick="reprocess('ai')">force AI</button>
+      <button onclick="retag()" title="Analyse the audio for genre, mood and tempo">tag this track</button>
     </div>
     <div class="player" id="player-box" hidden><audio id="player" controls preload="none"></audio></div>
     <div id="lyrics"></div>
@@ -286,6 +291,9 @@ $('#btn-pending').onclick = e => runIds(e.target, 'pending', 'queueing…');
 $('#btn-failed').onclick = e => runIds(e.target, 'failed', 'queueing…');
 $('#btn-review').onclick = e => runIds(e.target, 'needs-review', 'queueing…');
 $('#btn-all').onclick = e => runIds(e.target, 'all', 'queueing…');
+$('#btn-tag').onclick = e => withButton(e.target, 'queueing…', async () => {
+  await post(`/api/tag?${scope()}${embedParam()}`); await load();
+});
 
 $('#btn-scan').onclick = e => withButton(e.target, 'scanning…', async () => {
   const r = await fetch(`/api/scan?${scope()}`, {method: 'POST'});
@@ -416,6 +424,7 @@ async function select(id) {
           <span class="sub">— ${esc(sel.tag_artist) || '?'} · ${Math.round(sel.duration || 0)}s</span>`) +
     fact('parsed', `${esc(sel.parsed_title)} <span class="sub">— ${esc(sel.parsed_artist) || '?'}</span>`) +
     (sel.is_variant || sel.is_cover ? `<dt>flags</dt><dd class="row">${flags(sel)}</dd>` : '') +
+    audioTags(sel.tags) +
     fact('lrclib', i.track ? `${esc(i.track)} <span class="sub">— ${esc(i.artist)} · ${i.orig_duration}s
           · speed ${i.ratio}× · offset ${i.offset}s</span>` : '') +
     fact('whisper', i.language ? `${i.language} <span class="sub">· align ${i.score} · ${i.lines} lines</span>` : '') +
@@ -428,7 +437,8 @@ async function select(id) {
     (sel.error ? `<dt>error</dt><dd class="err">${esc(sel.error)}</dd>` : '');
   for (const id of ['#facts', '#actions', '#player-box']) $(id).hidden = false;
 
-  const p = $('#player'); p.src = `/api/tracks/${id}/audio`; p.load();
+  const p = $('#player'), src = `/api/tracks/${id}/audio`;
+  if (!p.src.endsWith(src)) { p.src = src; p.load(); }  // same track: leave the player playing
   lines = [];
   for (const line of (sel.lyrics || '').split('\n')) {
     const m = line.match(/^\[(\d+):(\d+(?:\.\d+)?)\](.*)$/);
@@ -437,6 +447,18 @@ async function select(id) {
   $('#lyrics').innerHTML = lines.length
     ? lines.map((l, n) => `<p data-i="${n}" onclick="seek(${l.t})"><small>${fmt(l.t)}</small>${esc(l.text)}</p>`).join('')
     : '<p>No lyrics yet.</p>';
+}
+
+function audioTags(t) {
+  if (!t) return '<dt>audio tags</dt><dd class="sub">not tagged yet — press “tag this track”</dd>';
+  if (t.error) return `<dt>audio tags</dt><dd class="err">${esc(t.error)}</dd>`;
+  const pills = g => g.map(([label, score]) =>
+    `<span class="tag audio">${esc(label)}<span class="pc">${Math.round(score * 100)}%</span></span>`).join('');
+  return `<dt>genre</dt><dd class="row">${pills(t.genres) || '<span class="sub">nothing above the score floor</span>'}</dd>` +
+         (t.moods.length ? `<dt>mood</dt><dd class="row">${pills(t.moods)}</dd>` : '') +
+         `<dt>audio</dt><dd class="row">${t.bpm ? `<span class="sub">${t.bpm} bpm</span>` : ''}
+            ${t.variant ? `<span class="tag ghost">${esc(t.variant)}</span>` : ''}
+            ${t.speed ? `<span class="sub">${t.speed}× the original</span>` : ''}</dd>`;
 }
 
 const fmt = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}`;
@@ -452,6 +474,14 @@ $('#player').addEventListener('timeupdate', e => {
     p.classList.toggle('on', on);
   });
 });
+
+async function retag() {
+  if (!sel) return;
+  const btns = document.querySelectorAll('#actions button');
+  btns.forEach(b => b.disabled = true);
+  try { await post(`/api/tracks/${sel.id}/retag?${embedParam().slice(1)}`); await load(); }
+  finally { btns.forEach(b => b.disabled = false); }
+}
 
 async function reprocess(path) {
   if (!sel) return;
@@ -484,7 +514,7 @@ setInterval(async () => {  // keep statuses fresh while the worker runs, and cat
   const busy = !!(s.queued || s.processing || s.scan);
   if (busy || wasBusy) {
     await load();
-    if (sel && (sel.id === processingId || sel.status === 'pending')) select(sel.id);
+    if (sel) select(sel.id);  // cheap now that the player survives it, and catches tag results too
   }
   wasBusy = busy;
 }, 2000);
