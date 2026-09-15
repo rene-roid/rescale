@@ -118,14 +118,28 @@ def _verify_stream(audio: Path, before: bytes) -> None:
 
 
 def _embed_id3(audio: Path, lrc: str) -> None:
-    """USLT frame, plus the stream check."""
+    """USLT frame. Only mp3 takes a bare ID3 save (plus the stream check): on wav/aiff the frames live
+    in a RIFF/AIFF chunk, and a bare save prepends them to the file instead, which leaves the RIFF
+    header no longer at offset 0 - ffmpeg then refuses the file outright, so nothing downstream can
+    decode, tag or transcribe it. The container write is what embed_tags already does for the same reason."""
+    frame = USLT(encoding=3, lang="und", desc="", text=lrc)
+    if audio.suffix.lower() != ".mp3":
+        f = mutagen.File(audio)
+        if f is None:
+            raise RuntimeError(f"mutagen does not recognise {audio}")
+        if f.tags is None:
+            f.add_tags()
+        f.tags.delall("USLT")
+        f.tags.add(frame)
+        f.save()
+        return
     before = audio.read_bytes()
     try:
         tags = ID3(audio)
     except ID3NoHeaderError:
         tags = ID3()
     tags.delall("USLT")
-    tags.add(USLT(encoding=3, lang="und", desc="", text=lrc))
+    tags.add(frame)
     tags.save(audio, v2_version=3)
     _verify_stream(audio, before)
 

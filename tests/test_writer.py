@@ -78,10 +78,13 @@ def test_embed_restores_backup_on_failure(tmp_path, monkeypatch):
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
-@pytest.mark.parametrize("ext", [".mp3", ".flac", ".ogg", ".opus", ".m4a"])
+@pytest.mark.parametrize("ext", [".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav"])
 def test_lyrics_written_into_a_file_are_found_again(tmp_path, ext):
     """Every format we embed into, we must be able to read back - otherwise a rescan re-runs the
-    whole library through the GPU to redo work that is already sitting in the files."""
+    whole library through the GPU to redo work that is already sitting in the files.
+
+    The ffmpeg check is the point of the wav case: mutagen reads its own prepended tag back happily,
+    so a round-trip alone still passes on a wav that ffmpeg can no longer open at all."""
     p = tmp_path / ("song" + ext)
     subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
                     "-y", str(p)], check=True)
@@ -89,6 +92,8 @@ def test_lyrics_written_into_a_file_are_found_again(tmp_path, ext):
 
     embed_lyrics(p, LRC)
     assert existing_lyrics(p) == (LRC, "embedded")
+    assert subprocess.run(["ffmpeg", "-v", "error", "-i", str(p), "-f", "null", "-"],
+                          capture_output=True).returncode == 0
 
 
 def test_a_sidecar_counts_too_and_plain_lyrics_do_not(tmp_path):

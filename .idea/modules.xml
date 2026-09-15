@@ -8,6 +8,7 @@
       <module fileurl="file://$PROJECT_DIR$/.idea/rescale-matcher.iml" filepath="$PROJECT_DIR$/.idea/rescale-matcher.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/rescale-rescaler.iml" filepath="$PROJECT_DIR$/.idea/rescale-rescaler.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/rescale-scanner.iml" filepath="$PROJECT_DIR$/.idea/rescale-scanner.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/rescale-tagger.iml" filepath="$PROJECT_DIR$/.idea/rescale-tagger.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/rescale-transcriber.iml" filepath="$PROJECT_DIR$/.idea/rescale-transcriber.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/rescale-writer.iml" filepath="$PROJECT_DIR$/.idea/rescale-writer.iml" />
     </modules>

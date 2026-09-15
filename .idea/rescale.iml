@@ -12,5 +12,6 @@
     <orderEntry type="module" module-name="rescale-rescaler" exported="" />
     <orderEntry type="module" module-name="rescale-transcriber" exported="" />
     <orderEntry type="module" module-name="rescale-scanner" exported="" />
+    <orderEntry type="module" module-name="rescale-tagger" exported="" />
   </component>
 </module>
