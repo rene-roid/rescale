@@ -97,8 +97,13 @@ def sim(a: str, b: str) -> float:
 
 
 def _get(path: str, **params) -> list | dict | None:
-    url = f"{LRCLIB}/{path}?{urllib.parse.urlencode({k: v for k, v in params.items() if v})}"
-    cache = data_dir("cache/lrclib") / (hashlib.sha1(url.encode()).hexdigest() + ".json")
+    return get_json(f"{LRCLIB}/{path}", "lrclib", 0.5, **params)
+
+
+def get_json(base: str, cache_name: str, pause: float, **params) -> list | dict | None:
+    """GET a JSON API with an on-disk cache, backing off on rate limits. 404 = None."""
+    url = f"{base}?{urllib.parse.urlencode({k: v for k, v in params.items() if v})}"
+    cache = data_dir(f"cache/{cache_name}") / (hashlib.sha1(url.encode()).hexdigest() + ".json")
     if cache.exists():
         return json.loads(cache.read_text())
     req = urllib.request.Request(url, headers={"User-Agent": UA})
@@ -111,15 +116,15 @@ def _get(path: str, **params) -> list | dict | None:
             if e.code == 404:
                 body = "null"
                 break
-            if e.code < 500 or attempt == 5:
+            if (e.code < 500 and e.code not in (403, 429)) or attempt == 5:
                 raise
-            time.sleep(2 ** (attempt + 1))  # 503 / rate limit: 2, 4, 8, 16, 32 s
+            time.sleep(2 ** (attempt + 1))  # 503 / 429 / iTunes' 403 rate limit: 2, 4, 8, 16, 32 s
         except urllib.error.URLError:
             if attempt == 5:
                 raise
             time.sleep(2 ** (attempt + 1))
     cache.write_text(body)
-    time.sleep(0.5)  # be polite to a free service
+    time.sleep(pause)  # be polite to a free service
     return json.loads(body)
 
 
@@ -170,9 +175,15 @@ def score(p: Parsed, r: dict, duration: float | None) -> Match:
 
 
 def candidates(p: Parsed, duration: float | None) -> list[Match]:
-    """Scored LRCLIB candidates, best first. Same title from several artists with nothing that names
-    the artist -> the top one is capped at the review threshold (title alone is a coin flip)."""
-    matches = sorted((score(p, r, duration) for r in search(p)), key=lambda m: -m.confidence)
+    """Scored LRCLIB candidates, best first."""
+    return rank(p, duration, search(p))
+
+
+def rank(p: Parsed, duration: float | None, records: list[dict]) -> list[Match]:
+    """Score records ({trackName, artistName, duration}), best first. Same title from several artists
+    with nothing that names the artist -> the top one is capped at the review threshold (title alone
+    is a coin flip)."""
+    matches = sorted((score(p, r, duration) for r in records), key=lambda m: -m.confidence)
     if not matches:
         return []
     names = [p.artist] if p.artist else p.hints
@@ -196,3 +207,44 @@ def lyric_similarity(transcript: str, plain_lyrics: str | None) -> float:
     """Share of the transcript's character 4-grams that occur in the candidate's lyrics (language agnostic)."""
     t, l = _grams(norm(transcript)), _grams(norm(plain_lyrics or ""))
     return round(len(t & l) / len(t), 3) if t else 0.0
+
+
+# ---- song metadata (iTunes Search API: no key, ~20 requests/minute) --------------------------------
+
+ITUNES = "https://itunes.apple.com/search"
+FEAT_TAIL = re.compile(r"\s*[\(\[](feat|ft)\.?\s[^\)\]]*[\)\]]", re.I)  # "Too Much (feat. Usher)": scored without it, written with it
+
+
+def metadata(p: Parsed, duration: float | None) -> list[Match]:
+    """Song metadata candidates (iTunes Search API) for the song `p` names, best first, scored like the lyrics lookup.
+    Each record keeps LRCLIB's field names, plus album/year/track/genre/url. A bare title is a coin
+    flip ("Reverse" has a dozen artists), so the artist and every bracket hint ("[niki]") are tried
+    first, stopping at the first confident match; every result seen so far is ranked together.
+    Nothing listens to the audio here, so a match no known name vouches for is capped at the review
+    threshold however well its title and length fit: "Nightcore - Infected" alone is not a song."""
+    names = [p.artist] if p.artist else p.hints[:3]
+    cap = config()["matcher"]["review"]
+    terms = list(dict.fromkeys([f"{n} {p.title}" for n in names] + [p.title]))
+    records, ranked = {}, []
+    for term in terms:
+        found = (get_json(ITUNES, "itunes", 3.0, term=term, media="music", entity="song", limit=15) or {})
+        records |= {r["trackId"]: {"trackName": FEAT_TAIL.sub("", r["trackName"]).strip() or r["trackName"],
+                                   "title": r["trackName"], "artistName": r["artistName"],
+                    "duration": (r.get("trackTimeMillis") or 0) / 1000, "album": r.get("collectionName"),
+                    "year": (r.get("releaseDate") or "")[:4] or None, "track": r.get("trackNumber"),
+                    "genre": r.get("primaryGenreName"), "url": r.get("trackViewUrl")}
+                   for r in found.get("results", []) if r.get("kind") == "song"}
+        ranked = rank(p, duration, list(records.values()))
+        for m in ranked:
+            if not any(_names_match(n, m.record["artistName"]) for n in names):
+                m.confidence = min(m.confidence, cap)
+        ranked.sort(key=lambda m: -m.confidence)
+        if ranked and ranked[0].confidence >= config()["matcher"]["accept"]:
+            break
+    return ranked
+
+
+def _names_match(name: str, artist: str) -> bool:
+    """"niki" names "Niki & Lily": a close match, or the whole name inside a credit for several."""
+    n = norm(name)
+    return sim(name, artist) >= 0.8 or (len(n) >= 3 and n in norm(artist))

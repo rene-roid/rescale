@@ -5,7 +5,7 @@ import subprocess
 import mutagen
 import pytest
 from mutagen.id3 import ID3
-from rescale_writer import (can_embed, embed_lyrics, embed_tags, existing_lyrics, is_synced,
+from rescale_writer import (can_embed, embed_lyrics, embed_meta, embed_tags, existing_lyrics, is_synced,
                             lrc_path, write_lrc)
 
 LRC = "[ti:Faded]\n[00:12.50]You were the shadow to my light\n"
@@ -149,3 +149,28 @@ def test_embed_tags_is_a_no_op_with_nothing_to_write(tmp_path):
     before = p.read_bytes()
     assert embed_tags(p, [], [], None) == p
     assert p.read_bytes() == before
+
+
+META = {"title": "Idol (Nightcore)", "artist": "YOASOBI", "album": "Idol - Single", "date": "2023",
+        "tracknumber": 1}
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg to make a real container")
+@pytest.mark.parametrize("ext", [".mp3", ".flac", ".ogg", ".opus", ".m4a", ".wav"])
+def test_embed_meta_round_trips_and_leaves_the_file_playable(tmp_path, ext):
+    p = tmp_path / ("song" + ext)
+    subprocess.run(["ffmpeg", "-v", "quiet", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-y", str(p)], check=True)
+
+    assert embed_meta(p, META | {"album": None}) == p  # empty fields are skipped, not blanked
+
+    if ext == ".wav":
+        tags = mutagen.File(p).tags
+        got = {k: str(tags.getall(f)[0].text[0]) for k, f in
+               {"title": "TIT2", "artist": "TPE1", "date": "TDRC", "tracknumber": "TRCK"}.items()}
+    else:
+        f = mutagen.File(p, easy=True)
+        got = {k: f[k][0] for k in ("title", "artist", "date", "tracknumber")}
+    assert got == {"title": "Idol (Nightcore)", "artist": "YOASOBI", "date": "2023", "tracknumber": "1"}
+    assert subprocess.run(["ffmpeg", "-v", "error", "-i", str(p), "-f", "null", "-"],
+                          capture_output=True).returncode == 0

@@ -77,6 +77,16 @@
   .chip[data-k=needs-review] .dot { background:var(--warn); }
   .chip[data-k=failed] .dot { background:var(--bad); }
   .chip.on { background:var(--raised); border-color:#3f4046; color:var(--fg); }
+  .chip.miss { border-style:dashed; }
+  .chip.miss .dot { background:transparent; border:1px solid var(--mute); }
+
+  /* ---- selection: pick rows, then run one job over them ---- */
+  #picked { color:var(--mute); font-size:var(--fs-1); font-variant-numeric:tabular-nums; white-space:nowrap; }
+  #picked b { color:var(--hi); }
+  th.pick, td.pick { width:34px; padding-right:0; text-align:center; }
+  .pick input { width:14px; height:14px; padding:0; vertical-align:middle; accent-color:var(--hi); cursor:pointer; }
+  tr.on td { background:#1c1a12; }
+  td.dim { color:var(--dim); }
 
   /* ---- one badge shape for status and flags alike ---- */
   .tag {
@@ -191,20 +201,23 @@
     <input id="q" placeholder="filter by path…" size="26">
     <span id="progress"></span>
     <span class="spacer"></span>
-    <label class="check" title="Write into the file's own tags: lyrics instead of a .lrc sidecar, and the genres from the audio tagger">
+    <label class="check" title="Write into the file's own tags: lyrics instead of a .lrc sidecar, the genre/mood/tempo from the audio tagger, and confident metadata matches">
       <input type="checkbox" id="embed"> embed into file
     </label>
   </div>
   <div class="bar">
     <div class="chips" id="chips"></div>
     <span class="spacer"></span>
-    <div class="group">
-      <button class="accent" id="btn-scan" title="Walk this library for new or changed files">rescan library</button>
-      <button id="btn-pending">run pending</button>
-      <button id="btn-failed">retry failed</button>
-      <button id="btn-review">retry review</button>
-      <button id="btn-all">retry all</button>
-      <button id="btn-tag" title="Analyse every untagged track for genre, mood and tempo">tag untagged</button>
+    <button class="accent" id="btn-scan" title="Walk this library for new or changed files">rescan library</button>
+  </div>
+  <div class="bar">
+    <span id="picked">tick tracks, or filter and tick the header box to take every one shown</span>
+    <span class="spacer"></span>
+    <div class="group" id="bulk">
+      <button data-job="process" title="Find synced lyrics: online lookup, else AI transcription">find lyrics</button>
+      <button data-job="tag" title="Analyse the audio for genre, mood and tempo">tag genre &amp; mood</button>
+      <button data-job="meta" title="Look the song up online for its real title, artist, album and year">fetch metadata</button>
+      <button id="btn-clear" class="icon">clear</button>
     </div>
   </div>
 </header>
@@ -213,15 +226,17 @@
   <div id="list">
     <table>
       <thead><tr>
+        <th class="pick"><input type="checkbox" id="pick-all" title="Select every track shown"></th>
         <th style="width:124px">status</th>
         <th style="width:56px" class="num">conf</th>
         <th style="width:62px">via</th>
         <th style="width:22%">folder</th>
         <th>file</th>
-        <th style="width:170px">parsed title</th>
+        <th style="width:210px" title="What the metadata lookup found, else what the filename parses to">song</th>
+        <th style="width:110px">genre</th>
         <th style="width:92px">flags</th>
       </tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="empty">loading…</td></tr></tbody>
+      <tbody id="rows"><tr><td colspan="9" class="empty">loading…</td></tr></tbody>
     </table>
   </div>
   <aside>
@@ -231,7 +246,8 @@
       <button onclick="reprocess('auto')">reprocess</button>
       <button onclick="reprocess('online')">force online</button>
       <button onclick="reprocess('ai')">force AI</button>
-      <button onclick="retag()" title="Analyse the audio for genre, mood and tempo">tag this track</button>
+      <button onclick="queue('tag')" title="Analyse the audio for genre, mood and tempo">tag</button>
+      <button onclick="queue('meta')" title="Look the song up online for its title, artist, album and year">fetch metadata</button>
     </div>
     <div class="player" id="player-box" hidden><audio id="player" controls preload="none"></audio></div>
     <div id="lyrics"></div>
@@ -271,7 +287,9 @@ const post = url => fetch(url, {method: 'POST'}).then(r => r.json());
 const STATUSES = ['pending', 'has-lyrics', 'matched-online', 'ai-transcribed', 'needs-review', 'failed'];
 
 let tracks = [], sel = null, lines = [], processingId = null, libs = [];
-let status = '', lib = localStorage.lib ?? '';
+let status = '', missingOf = '', lib = localStorage.lib ?? '';
+let picked = new Set(), lastPick = null;
+const MISSING = {lyrics: 'no lyrics', tags: 'untagged', meta: 'no metadata'};
 
 const scope = () => `lib=${encodeURIComponent(lib)}`;
 const embedParam = () => '&embed=' + $('#embed').checked;
@@ -284,16 +302,35 @@ async function withButton(btn, label, fn) {
   finally { btn.disabled = false; btn.textContent = orig; }
 }
 
-const runIds = (btn, s, label) =>
-  withButton(btn, label, async () => { await post(`/api/run?status=${s}&${scope()}${embedParam()}`); await load(); });
+/** Queue one job (process | tag | meta) over some tracks. */
+const enqueue = (job, ids) => fetch('/api/queue', {method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({ids, job, embed: $('#embed').checked})}).then(r => r.json());
 
-$('#btn-pending').onclick = e => runIds(e.target, 'pending', 'queueing…');
-$('#btn-failed').onclick = e => runIds(e.target, 'failed', 'queueing…');
-$('#btn-review').onclick = e => runIds(e.target, 'needs-review', 'queueing…');
-$('#btn-all').onclick = e => runIds(e.target, 'all', 'queueing…');
-$('#btn-tag').onclick = e => withButton(e.target, 'queueing…', async () => {
-  await post(`/api/tag?${scope()}${embedParam()}`); await load();
+$('#bulk').addEventListener('click', e => {
+  const b = e.target.closest('button[data-job]'); if (!b) return;
+  withButton(b, 'queueing…', async () => { await enqueue(b.dataset.job, [...picked]); setPicked([]); await load(); });
 });
+$('#btn-clear').onclick = () => setPicked([]);
+
+/** Replace the selection, then repaint the checkboxes and the bar without refetching. */
+function setPicked(ids) { picked = new Set(ids); renderPicked(); }
+
+function renderPicked() {
+  const n = picked.size, shown = tracks.filter(t => picked.has(t.id)).length;
+  $('#picked').innerHTML = n ? `<b>${n}</b> selected${n > shown ? ` · ${n - shown} not shown` : ''}`
+                             : 'tick tracks, or filter and tick the header box to take every one shown';
+  document.querySelectorAll('#bulk button').forEach(b => b.disabled = !n);
+  document.querySelectorAll('#rows tr[data-id]').forEach(tr => {
+    const on = picked.has(+tr.dataset.id);
+    tr.classList.toggle('on', on); tr.querySelector('.pick input').checked = on;
+  });
+  const all = $('#pick-all');
+  all.checked = tracks.length > 0 && shown === tracks.length;
+  all.indeterminate = shown > 0 && shown < tracks.length;
+}
+
+$('#pick-all').onchange = e => setPicked(e.target.checked ? [...picked, ...tracks.map(t => t.id)]
+                                                           : [...picked].filter(i => !tracks.some(t => t.id === i)));
 
 $('#btn-scan').onclick = e => withButton(e.target, 'scanning…', async () => {
   const r = await fetch(`/api/scan?${scope()}`, {method: 'POST'});
@@ -359,11 +396,14 @@ $('#lib').onchange = e => { lib = e.target.value; localStorage.lib = lib; sel = 
 // ---- list --------------------------------------------------------------------------------------
 
 function renderChips(counts) {
-  const total = Object.values(counts).reduce((a, b) => a + b, 0);
+  const total = STATUSES.reduce((a, s) => a + (counts[s] ?? 0), 0);
   $('#chips').innerHTML =
     `<button class="chip ${status === '' ? 'on' : ''}" data-s=""><span class="dot"></span>all <span class="n">${total}</span></button>` +
     STATUSES.map(s => `<button class="chip ${status === s ? 'on' : ''}" data-s="${s}" data-k="${s}">
-      <span class="dot"></span>${s.replace('-', ' ')} <span class="n">${counts[s] ?? 0}</span></button>`).join('');
+      <span class="dot"></span>${s.replace('-', ' ')} <span class="n">${counts[s] ?? 0}</span></button>`).join('') +
+    '<span class="sep" style="align-self:center"></span>' +
+    Object.entries(MISSING).map(([k, label]) => `<button class="chip miss ${missingOf === k ? 'on' : ''}" data-m="${k}">
+      <span class="dot"></span>${label} <span class="n">${counts['missing-' + k] ?? 0}</span></button>`).join('');
 }
 
 function showProgress(p, queued, processing) {
@@ -381,7 +421,7 @@ const flags = t => (t.is_variant ? '<span class="tag ghost">variant</span>' : ''
 
 async function load() {
   const [list, stats] = await Promise.all([
-    fetch(`/api/tracks?status=${encodeURIComponent(status)}&q=${encodeURIComponent($('#q').value)}&${scope()}`).then(r => r.json()),
+    fetch(`/api/tracks?status=${encodeURIComponent(status)}${missingOf ? '&missing=' + missingOf : ''}&q=${encodeURIComponent($('#q').value)}&${scope()}`).then(r => r.json()),
     fetch(`/api/stats?${scope()}`).then(r => r.json())]);
   tracks = list;
   libs = stats.libraries;
@@ -392,16 +432,20 @@ async function load() {
   if (stats.error) $('#progress').innerHTML = `<span class="err">${esc(stats.error)}</span>`;
 
   $('#rows').innerHTML = tracks.length ? tracks.map(t => `<tr data-id="${t.id}" class="${sel?.id === t.id ? 'sel' : ''}">
+    <td class="pick"><input type="checkbox" aria-label="select ${esc(t.filename)}"></td>
     <td>${t.id === processingId ? '<span class="tag processing">processing</span>'
                                 : `<span class="tag ${t.status}">${t.status}</span>`}</td>
     <td class="num">${t.confidence ?? '—'}</td>
     <td>${t.path_used ? `<span class="tag ghost">${t.path_used}${t.path_pref !== 'auto' ? ' ·' : ''}</span>` : ''}</td>
     <td class="folder" title="${esc(t.folder)}">${esc(t.folder)}</td>
     <td title="${esc(t.filename)}">${esc(t.filename)}</td>
-    <td title="${esc(t.parsed_title)} — ${esc(t.parsed_artist)}">${esc(t.parsed_title)}</td>
+    ${t.meta ? `<td title="${esc(t.meta)}">${esc(t.meta)}</td>`
+             : `<td class="dim" title="${esc(t.parsed_title || t.tag_title)}">${esc(t.parsed_title || t.tag_title)}</td>`}
+    <td class="${t.genre ? '' : 'dim'}" title="${esc(t.genre)}">${esc(t.genre) || '—'}</td>
     <td>${flags(t)}</td></tr>`).join('')
-    : `<tr><td colspan="7" class="empty">${libs.length ? 'No tracks here. Try “rescan library”, or widen the filter.'
+    : `<tr><td colspan="9" class="empty">${libs.length ? 'No tracks here. Try “rescan library”, or widen the filter.'
                                                        : 'No libraries yet — open “libraries…” and add your music folder.'}</td></tr>`;
+  renderPicked();
 }
 
 // ---- detail ------------------------------------------------------------------------------------
@@ -424,7 +468,7 @@ async function select(id) {
           <span class="sub">— ${esc(sel.tag_artist) || '?'} · ${Math.round(sel.duration || 0)}s</span>`) +
     fact('parsed', `${esc(sel.parsed_title)} <span class="sub">— ${esc(sel.parsed_artist) || '?'}</span>`) +
     (sel.is_variant || sel.is_cover ? `<dt>flags</dt><dd class="row">${flags(sel)}</dd>` : '') +
-    audioTags(sel.tags) +
+    audioTags(sel.tags) + songMeta(sel.meta) +
     fact('lrclib', i.track ? `${esc(i.track)} <span class="sub">— ${esc(i.artist)} · ${i.orig_duration}s
           · speed ${i.ratio}× · offset ${i.offset}s</span>` : '') +
     fact('whisper', i.language ? `${i.language} <span class="sub">· align ${i.score} · ${i.lines} lines</span>` : '') +
@@ -461,6 +505,18 @@ function audioTags(t) {
             ${t.speed ? `<span class="sub">${t.speed}× the original</span>` : ''}</dd>`;
 }
 
+function songMeta(m) {
+  if (!m) return '';
+  if (m.error) return `<dt>metadata</dt><dd class="err">${esc(m.error)}</dd>`;
+  const r = m.found;
+  if (!r) return '<dt>metadata</dt><dd class="sub">nothing found online</dd>';
+  return `<dt>metadata</dt><dd>${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(r.trackName)}</a>`
+                                         : esc(r.trackName)}
+    <span class="sub">— ${esc(r.artistName)}${r.album ? ` · ${esc(r.album)}` : ''}${r.year ? ` · ${r.year}` : ''}
+    ${r.genre ? ` · ${esc(r.genre)}` : ''} · conf ${m.confidence}${m.written_at ? ' · written to file'
+      : m.confidence != null && !m.confident ? ' · unconfirmed guess, not written' : ''}</span></dd>`;
+}
+
 const fmt = t => `${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(2).padStart(5, '0')}`;
 const seek = t => { const p = $('#player'); p.currentTime = t; p.play(); };
 
@@ -475,11 +531,11 @@ $('#player').addEventListener('timeupdate', e => {
   });
 });
 
-async function retag() {
+async function queue(job) {
   if (!sel) return;
   const btns = document.querySelectorAll('#actions button');
   btns.forEach(b => b.disabled = true);
-  try { await post(`/api/tracks/${sel.id}/retag?${embedParam().slice(1)}`); await load(); }
+  try { await enqueue(job, [sel.id]); await load(); }
   finally { btns.forEach(b => b.disabled = false); }
 }
 
@@ -493,10 +549,23 @@ async function reprocess(path) {
 
 // ---- wiring ------------------------------------------------------------------------------------
 
-$('#rows').addEventListener('click', e => { const tr = e.target.closest('tr[data-id]'); if (tr) select(+tr.dataset.id); });
+$('#rows').addEventListener('click', e => {
+  const tr = e.target.closest('tr[data-id]'); if (!tr) return;
+  const id = +tr.dataset.id;
+  if (!e.target.closest('.pick')) return select(id);
+  const ids = tracks.map(t => t.id), on = !picked.has(id);
+  // shift-click ticks (or unticks) the whole run since the last box clicked
+  const run = e.shiftKey && lastPick != null && ids.includes(lastPick)
+    ? ids.slice(Math.min(ids.indexOf(lastPick), ids.indexOf(id)), Math.max(ids.indexOf(lastPick), ids.indexOf(id)) + 1)
+    : [id];
+  run.forEach(i => on ? picked.add(i) : picked.delete(i));
+  lastPick = id;
+  renderPicked();
+});
 $('#chips').addEventListener('click', e => {
   const c = e.target.closest('.chip'); if (!c) return;
-  status = c.dataset.s; load();
+  [status, missingOf] = c.dataset.m ? ['', missingOf === c.dataset.m ? '' : c.dataset.m] : [c.dataset.s, ''];
+  load();
 });
 $('#q').addEventListener('input', () => { clearTimeout(window._t); window._t = setTimeout(load, 250); });
 $('#embed').addEventListener('change', e => localStorage.embed = e.target.checked);

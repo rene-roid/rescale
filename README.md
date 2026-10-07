@@ -103,6 +103,7 @@ fit — all of it falls through to the AI path instead of writing garbage.
 | Backend | FastAPI + SQLModel, SQLite |
 | Frontend | One `index.html`, no build step |
 | Lyrics source | [LRCLIB](https://lrclib.net) |
+| Song metadata | [iTunes Search API](https://performance-partners.apple.com/search-api) |
 | ML | [WhisperX](https://github.com/m-bain/whisperX) (`large-v3`) + [Demucs](https://github.com/adefossez/demucs) (`htdemucs`), torch cu128 |
 | Audio | FFmpeg |
 
@@ -121,7 +122,7 @@ uv run rescale serve          # http://localhost:8765
 
 *libraries…* in the web UI manages the list: a local folder, or `sftp://user@nas/mnt/data/music` with
 a username and password. Each one is walked recursively and scanned separately, and the library picker
-scopes everything downstream — the track list, the per-status counts, and every run button. Which
+scopes everything downstream — the track list, the per-status counts, and what a selection runs on. Which
 tracks belong to which library is derived from their path, so adding a folder adopts whatever was
 already scanned under it.
 
@@ -174,6 +175,21 @@ MP4 - each written as a real multi-value field, which is what [Navidrome's tag m
 reads genre and mood as. The variant call has no matching field in any of these formats, so it stays
 database-only. `[tagger] embed` is the default for `rescale tag` when no flag is given.
 
+**Running things from the UI:** tick tracks (shift-click ticks a run of them), then *find lyrics*, *tag
+genre & mood* or *fetch metadata*. The dashed chips filter to what is still missing — *no lyrics*,
+*untagged*, *no metadata* — so "everything without lyrics" is that chip, the header checkbox, *find
+lyrics*. The selection survives changing the filter, so you can collect from several before running.
+
+**Song metadata:** *fetch metadata* looks each track up on the [iTunes Search API](https://performance-partners.apple.com/search-api)
+(no account or key; ~20 requests a minute, cached in `data/cache/itunes/`) for its real title, artist,
+album, year and track number. A track LRCLIB already matched is looked up by that match; the rest by
+what the filename parses to, trying the artist and any bracketed names before the bare title. Nothing
+listens to the audio here, so a match only counts as confident when a known name vouches for its
+artist — "Nightcore - Infected" on its own stays an unconfirmed guess. With *embed into file* ticked
+(`[metadata] embed` for the default), confident matches are written into the file: title and artist
+always, album/date/track number only into a file with no album yet; a variant keeps its kind in the
+title (`Idol (Nightcore)`), and covers are never written, since the match is the original recording.
+
 **Disk:** the only thing `data/` keeps per track is its row in SQLite — lyrics, timings, match details.
 The separated vocal stem is deleted once the track has been transcribed; they are uncompressed wav,
 a few hundred MB each, and kept for a whole library they run to tens of GB. Set
@@ -190,12 +206,13 @@ and are re-downloaded if removed.
 | Method | Route | Does |
 |---|---|---|
 | `GET` | `/api/stats` | counts per status |
-| `GET` | `/api/tracks?status=&q=` | list, filterable by status and path substring |
+| `GET` | `/api/tracks?status=&missing=lyrics\|tags\|meta&q=` | list, filterable by status, what is still missing, and path substring |
 | — | *(every route above takes `?lib=<id>` to scope it to one library)* | |
 | `GET` | `/api/tracks/{id}` | one track with its lyrics |
 | `GET` | `/api/tracks/{id}/audio` | stream the file for the UI player, byte ranges and all, remote tracks included |
 | `POST` | `/api/tracks/{id}/reprocess?path=auto\|online\|ai` | requeue one track on a given path |
 | `POST` | `/api/run?status=pending\|failed\|needs-review\|all` | kick the background worker |
+| `POST` | `/api/queue` | `{ids, job: process\|tag\|meta, embed}`: run one job over hand-picked tracks |
 | `POST` | `/api/scan` | rescan one library, or all of them |
 | `GET` | `/api/libraries` | the configured libraries, without their passwords |
 | `POST` | `/api/libraries` | `{url, name, username, password, auto_scan}`: add or edit one, validated before it is saved |
