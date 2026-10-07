@@ -58,3 +58,55 @@ def test_parse_keeps_which_variant_word_matched():
     assert parse("Some Song (slowed + reverb)", "x.mp3").variant_word == "slowed"
     p = parse("Ordinary Song", "x.mp3")
     assert p.variant_word is None and p.is_variant is False
+
+
+def test_metadata_ranks_itunes_results_and_maps_fields(monkeypatch):
+    import rescale_matcher
+    from rescale_matcher import Parsed, metadata
+
+    def song(name, artist, secs):
+        return {"kind": "song", "trackId": hash((name, artist)), "trackName": name, "artistName": artist, "trackTimeMillis": secs * 1000,
+                "collectionName": f"{name} - Single", "releaseDate": "2023-04-12T12:00:00Z", "trackNumber": 1,
+                "primaryGenreName": "J-Pop"}
+
+    terms = []
+
+    def fake(base, cache, pause, term, **_):
+        terms.append(term)
+        return {"results": [song("Idol (Instrumental)", "YOASOBI", 213), song("Idol (feat. X)", "YOASOBI", 213)]}
+
+    monkeypatch.setattr(rescale_matcher, "get_json", fake)
+    # a 1.25x nightcore of a 213 s original
+    best = metadata(Parsed("Idol", "YOASOBI", is_variant=True), 170.6)[0]
+    assert terms == ["YOASOBI Idol"]
+    assert best.record["trackName"] == "Idol" and best.record["title"] == "Idol (feat. X)"
+    assert best.confidence >= 0.85
+    assert best.record["year"] == "2023" and best.record["album"] == "Idol (feat. X) - Single"
+
+
+def test_metadata_tries_bracket_hints_before_the_bare_title(monkeypatch):
+    import rescale_matcher
+    from rescale_matcher import Parsed, metadata
+
+    results = {"niki Reverse": [("REVERSE", "niki")], "Reverse": [("Reverse", "Rvshvd")]}
+    terms = []
+
+    def fake(base, cache, pause, term, **_):
+        terms.append(term)
+        return {"results": [{"kind": "song", "trackId": hash(r), "trackName": r[0], "artistName": r[1],
+                             "trackTimeMillis": 200_000} for r in results.get(term, [])]}
+
+    monkeypatch.setattr(rescale_matcher, "get_json", fake)
+    best = metadata(Parsed("Reverse", hints=["niki", "Will Stetson"], is_cover=True), 200)[0]
+    assert best.record["artistName"] == "niki"
+    assert terms == ["niki Reverse"]  # confident on the first hint: no further requests
+
+
+def test_metadata_without_a_vouching_artist_is_never_confident(monkeypatch):
+    import rescale_matcher
+    from rescale_matcher import Parsed, metadata
+
+    monkeypatch.setattr(rescale_matcher, "get_json", lambda *a, **k: {"results": [
+        {"kind": "song", "trackId": 1, "trackName": "Infected", "artistName": "Shi Shi", "trackTimeMillis": 180_000}]})
+    best = metadata(Parsed("Infected", hints=["Syrex"], is_variant=True), 150)[0]
+    assert best.confidence <= 0.65  # title and length fit perfectly; nobody said it was Shi Shi

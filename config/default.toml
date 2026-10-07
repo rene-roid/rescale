@@ -95,6 +95,15 @@ moods = ["energetic", "aggressive", "happy", "uplifting", "melancholic", "sad", 
 # Off here so the library stays read-only apart from lyrics until you ask otherwise.
 embed = false
 
+[metadata]
+# Song metadata (title / artist / album / year / track number) looked up on the iTunes Search API - no
+# account or key, ~20 requests a minute, cached in data/cache/itunes. A track LRCLIB already matched is
+# looked up by that match; the rest by what the filename parses to. Only a match scoring >= [matcher]
+# accept is written into the file, never for a cover (the match is the original artist's recording),
+# and a variant keeps its kind in the title: "Idol (Nightcore)". Off here for the same reason as the
+# tagger's; the web UI's "embed into file" checkbox overrides it.
+embed = false
+
 [api]
 host = "0.0.0.0"
 port = 8765

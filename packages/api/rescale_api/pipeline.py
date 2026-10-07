@@ -10,11 +10,11 @@ from pathlib import Path
 
 from sqlalchemy import select
 
-from rescale_core import STATUSES, Library, Track, TrackTags, config, data_dir, in_library, session
-from rescale_matcher import candidates, lyric_similarity, parse
+from rescale_core import STATUSES, Library, Track, TrackMeta, TrackTags, config, data_dir, in_library, session
+from rescale_matcher import candidates, lyric_similarity, metadata, parse
 from rescale_scanner import remote
 from rescale_rescaler import build, fit, lines, rescale
-from rescale_writer import can_embed, embed_lyrics, embed_tags, write_lrc
+from rescale_writer import can_embed, embed_lyrics, embed_meta, embed_tags, write_lrc
 
 log = logging.getLogger("rescale")
 
@@ -47,6 +47,14 @@ def _localized(t: Track):
         yield local
     finally:
         remote.drop(local)
+
+
+def _saved_in_place(t: Track, audio: Path) -> None:
+    """The audio file itself was just rewritten: push it back for a remote track, and record its new
+    size+mtime, or the next scan sees a changed file and re-queues it."""
+    st = (remote.push(remote.owner(t.path), audio, remote.path_of(t.path))
+          if remote.is_remote(t.path) else audio.stat())
+    t.size, t.mtime = st.st_size, float(st.st_mtime)
 
 
 def _drop_stem(audio: Path) -> None:
@@ -216,7 +224,8 @@ def counts(lib: Library | None = None) -> dict:
     with session() as db:
         rows = in_library(db.query(Track.status), lib)
         n = collections.Counter(s for (s,) in rows)
-        return {s: n.get(s, 0) for s in STATUSES}
+        return {s: n.get(s, 0) for s in STATUSES} | {
+            f"missing-{k}": missing(in_library(db.query(Track.id), lib), k).count() for k in MISSING}
 
 
 # ---- tagging -------------------------------------------------------------------------------------
@@ -246,9 +255,7 @@ def tag_track(track_id: int, embed: bool | None = None) -> TrackTags:
                 r = tag(audio, named=named, ratio=ratio)
                 if embed and can_embed(audio):
                     embed_tags(audio, [g for g, _ in r["genres"]], [m for m, _ in r["moods"]], r["bpm"])
-                    st = (remote.push(remote.owner(t.path), audio, remote.path_of(t.path))
-                          if remote.is_remote(t.path) else audio.stat())
-                    t.size, t.mtime = st.st_size, float(st.st_mtime)  # else the next scan re-queues it
+                    _saved_in_place(t, audio)
             row.genres, row.moods = json.dumps(r["genres"]), json.dumps(r["moods"])
             row.bpm, row.variant, row.speed = r["bpm"], r["variant"], r["speed"]
             row.model, row.error = r["model"], None
@@ -263,13 +270,28 @@ def tag_track(track_id: int, embed: bool | None = None) -> TrackTags:
         return row
 
 
+MISSING = ("lyrics", "tags", "meta")
+
+
+def missing(q, kind: str):
+    """Narrow a Track query to the tracks still lacking `kind`: no lyrics (pending or failed), no
+    audio tags, or no confident metadata. A row that errored does not count as done; re-running a
+    metadata lookup that found nothing costs nothing, it is answered from the cache."""
+    if kind == "lyrics":
+        return q.filter(Track.status.in_(("pending", "failed")))
+    done = (select(TrackTags.track_id).where(TrackTags.error.is_(None)) if kind == "tags" else
+            select(TrackMeta.track_id).where(TrackMeta.error.is_(None),
+                                             TrackMeta.confidence >= config()["matcher"]["accept"]))
+    return q.filter(Track.id.notin_(done))
+
+
 def select_untagged(lib: Library | None = None, contains: str | None = None, limit: int | None = None,
                     retag: bool = False) -> list[int]:
     """Tracks with no tags yet. A row that failed is not "tagged", so it comes back on the next run."""
     with session() as db:
         q = in_library(db.query(Track.id), lib).order_by(Track.folder, Track.filename)
         if not retag:
-            q = q.filter(Track.id.notin_(select(TrackTags.track_id).where(TrackTags.error.is_(None))))
+            q = missing(q, "tags")
         if contains:
             q = q.filter(Track.path.contains(contains))
         if limit:
@@ -281,3 +303,56 @@ def tags_of(track_id: int) -> dict | None:
     with session() as db:
         row = db.get(TrackTags, track_id)
         return row.as_dict() if row else None
+
+
+# ---- song metadata -------------------------------------------------------------------------------
+
+
+def fetch_meta(track_id: int, embed: bool | None = None) -> TrackMeta:
+    """Look the song up online (title, artist, album, year, track number) and record the best match.
+    With `embed` and a confident match it also goes into the file's tags - never for a cover, whose
+    match describes somebody else's recording. A variant keeps what it is in its title, "(Nightcore)".
+    Title and artist are always written - a YouTube rip's are the video title and the uploader - but
+    album, date and track number only into a file that has no album yet."""
+    if embed is None:
+        embed = config()["metadata"]["embed"]
+    with session() as db:
+        t = db.get(Track, track_id)
+        p = parse(t.tag_title, t.filename, t.tag_artist, t.folder)
+        info = json.loads(t.match_info) if t.match_info else {}
+        if info.get("track"):  # LRCLIB already matched the song against the audio: look up exactly that
+            p.title, p.artist = info["track"], info["artist"]
+        log.info("[meta] %s/%s  title=%r artist=%r", t.folder, t.filename, p.title, p.artist)
+        row = db.get(TrackMeta, track_id)
+        if row is None:
+            row = TrackMeta(track_id=track_id)
+            db.add(row)
+        try:
+            cands = metadata(p, t.duration)
+            m = cands[0] if cands else None
+            row.source, row.error = "itunes", None
+            row.found, row.confidence = (json.dumps(m.record), m.confidence) if m else (None, None)
+            if embed and m and m.confidence >= config()["matcher"]["accept"] and not p.is_cover:
+                r = m.record
+                title = f"{r['title']} ({p.variant_word.title()})" if p.variant_word else r["title"]
+                fields = {"title": title, "artist": r["artistName"]}
+                if not t.tag_album:  # an album already there is someone's choice, and number/date belong to it
+                    fields |= {"album": r["album"], "date": r["year"], "tracknumber": r["track"]}
+                with _localized(t) as audio:
+                    if can_embed(audio):
+                        embed_meta(audio, fields)
+                        _saved_in_place(t, audio)
+                        t.tag_title, t.tag_artist, t.tag_album = title, r["artistName"], fields.get("album", t.tag_album)
+                        row.written_at = datetime.now(timezone.utc)
+            log.info("  -> %s", (m.record["trackName"], m.record["artistName"], m.confidence) if m else "nothing found")
+        except Exception as e:  # noqa: BLE001 - one bad track must not stop the batch
+            log.exception("  -> metadata failed: %s", e)
+            row.error = f"{type(e).__name__}: {e}"
+        db.commit()
+        return row
+
+
+def meta_of(track_id: int) -> dict | None:
+    with session() as db:
+        row = db.get(TrackMeta, track_id)
+        return row.as_dict() | {"confident": (row.confidence or 0) >= config()["matcher"]["accept"]} if row else None

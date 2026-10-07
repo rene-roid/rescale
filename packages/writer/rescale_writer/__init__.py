@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import mutagen
-from mutagen.id3 import ID3, ID3NoHeaderError, TBPM, TCON, TMOO, USLT
+from mutagen.id3 import ID3, ID3NoHeaderError, TALB, TBPM, TCON, TDRC, TIT2, TMOO, TPE1, TRCK, USLT
 from mutagen.mp4 import MP4, MP4FreeForm
 
 # One lyrics tag per container family, all of which Navidrome reads.
@@ -237,6 +237,38 @@ def embed_tags(audio: Path, genres: list[str], moods: list[str], bpm: float | No
                 f["mood"] = moods
             if bpm_s:
                 f["bpm"] = [bpm_s]
+        f.save()
+        if before:
+            _verify_stream(audio, before)
+    return audio
+
+
+_RIFF_FRAMES = {"title": TIT2, "artist": TPE1, "album": TALB, "date": TDRC, "tracknumber": TRCK}
+
+
+def embed_meta(audio: Path, fields: dict[str, str]) -> Path:
+    """Write song metadata (title / artist / album / date / tracknumber, empty ones skipped) into the
+    file's own tags. Same container split as embed_tags: mutagen's easy keys everywhere, raw ID3
+    frames inside the RIFF/AIFF chunk for wav/aiff."""
+    ext = audio.suffix.lower()
+    if ext not in EMBEDDABLE:
+        raise ValueError(f"no metadata tags known for {ext} files")
+    fields = {k: str(v) for k, v in fields.items() if v}
+    if not fields:
+        return audio
+    with _guarded(audio):
+        riff = ext in ID3_EXTENSIONS and ext != ".mp3"
+        before = audio.read_bytes() if ext == ".mp3" else b""
+        f = mutagen.File(audio, easy=not riff)
+        if f is None:
+            raise RuntimeError(f"mutagen does not recognise {audio}")
+        if f.tags is None:
+            f.add_tags()
+        for k, v in fields.items():
+            if riff:
+                f.tags.setall(_RIFF_FRAMES[k].__name__, [_RIFF_FRAMES[k](encoding=3, text=[v])])
+            else:
+                f[k] = [v]
         f.save()
         if before:
             _verify_stream(audio, before)

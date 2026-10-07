@@ -1,6 +1,7 @@
 """FastAPI: JSON API + static frontend, with a single background worker thread for processing."""
 from __future__ import annotations
 
+import json
 import mimetypes
 import queue
 import threading
@@ -10,8 +11,8 @@ from pathlib import Path
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from rescale_core import (REPO_ROOT, Library, Track, config, get_library, in_library,
-                          libraries, new_id, save_libraries, session)
+from rescale_core import (REPO_ROOT, Library, Track, TrackMeta, TrackTags, config, get_library,
+                          in_library, libraries, new_id, save_libraries, session)
 from rescale_scanner import remote, scan
 
 from rescale_api import pipeline
@@ -19,7 +20,9 @@ from rescale_api import pipeline
 app = FastAPI(title="Rescale")
 # ponytail: one worker thread, one GPU, in-memory queue. Lost on restart; pending rows are re-queued by /api/run.
 # Lyrics and tagging share it rather than running in parallel: both want the whole card to themselves.
+# ponytail: metadata lookups wait behind GPU work too; give them their own thread if that ever drags.
 _queue: queue.Queue[tuple[str, int, bool | None]] = queue.Queue()  # (job, track id, embed)
+JOBS = {"process": pipeline.process, "tag": pipeline.tag_track, "meta": pipeline.fetch_meta}
 _current: dict = {"id": None}
 _worker_error: dict = {"msg": None}
 
@@ -32,7 +35,7 @@ def _worker() -> None:
         job, i, embed = _queue.get()
         _current["id"] = i
         try:
-            pipeline.tag_track(i, embed=embed) if job == "tag" else pipeline.process(i, embed=embed)
+            JOBS[job](i, embed=embed)
         except Exception:  # process() only re-raises for a dead GPU; every queued track would fail too
             pipeline.log.exception("worker stopped; restart the server to process the rest")
             _worker_error["msg"] = "GPU error - restart the server, then re-run the failed tracks"
@@ -139,17 +142,26 @@ def stats(lib: str | None = None) -> dict:
 
 
 @app.get("/api/tracks")
-def tracks(status: str | None = None, q: str | None = None, lib: str | None = None) -> list[dict]:
+def tracks(status: str | None = None, q: str | None = None, lib: str | None = None,
+           missing: str | None = Query(None, pattern="^(lyrics|tags|meta)$")) -> list[dict]:
     with session() as db:
         qry = in_library(db.query(Track), _lib(lib)).order_by(Track.folder, Track.filename)
         if status:
             qry = qry.filter(Track.status == status)
+        if missing:
+            qry = pipeline.missing(qry, missing)
         if q:
             qry = qry.filter(Track.path.contains(q))
+        genres = dict(db.query(TrackTags.track_id, TrackTags.genres).filter(TrackTags.error.is_(None)))
+        metas = dict(db.query(TrackMeta.track_id, TrackMeta.found).filter(  # confident ones only: the rest are guesses
+            TrackMeta.error.is_(None), TrackMeta.confidence >= config()["matcher"]["accept"]))
         out = []
         for t in qry:
             d = t.as_dict()
             d.pop("lyrics")
+            g, m = json.loads(genres.get(t.id) or "[]"), json.loads(metas.get(t.id) or "null")
+            d["genre"] = g[0][0] if g else None
+            d["meta"] = f"{m['trackName']} — {m['artistName']}" if m else None
             out.append(d)
         return out
 
@@ -164,7 +176,7 @@ def _get(i: int) -> Track:
 
 @app.get("/api/tracks/{i}")
 def track(i: int) -> dict:
-    return _get(i).as_dict() | {"tags": pipeline.tags_of(i)}
+    return _get(i).as_dict() | {"tags": pipeline.tags_of(i), "meta": pipeline.meta_of(i)}
 
 
 # One range response is capped at this; the player asks for the next window as it plays. Keeping each
@@ -222,11 +234,13 @@ def reprocess(i: int, path: str = Query("auto", pattern="^(auto|online|ai)$"), e
     return {"queued": i, "path": path, "embed": embed}
 
 
-@app.post("/api/tracks/{i}/retag")
-def retag(i: int, embed: bool | None = None) -> dict:
-    _get(i)
-    _queue.put(("tag", i, embed))
-    return {"queued": i, "job": "tag", "embed": embed}
+@app.post("/api/queue")
+def enqueue(ids: list[int] = Body(...), job: str = Body(..., pattern="^(process|tag|meta)$"),
+            embed: bool | None = Body(None)) -> dict:
+    """Queue one job over a hand-picked set of tracks: find lyrics, tag the audio, or look up metadata."""
+    for i in ids:
+        _queue.put((job, i, embed))
+    return {"queued": len(ids), "job": job}
 
 
 @app.post("/api/run")

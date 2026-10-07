@@ -268,6 +268,28 @@ class TrackTags(Base):
         return d
 
 
+class TrackMeta(Base):
+    """Song metadata found online for a track (title, artist, album, year...). Its own table for the
+    same reason as TrackTags: no migration, and it must not disturb the lyrics status."""
+
+    __tablename__ = "track_meta"
+
+    track_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source: Mapped[str | None] = mapped_column(String)  # itunes
+    found: Mapped[str | None] = mapped_column(Text)  # JSON record of the best candidate, None = nothing found
+    confidence: Mapped[float | None] = mapped_column(Float)
+    written_at: Mapped[datetime | None] = mapped_column(DateTime)  # when it went into the file's tags
+    error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def as_dict(self) -> dict:
+        d = {c.name: getattr(self, c.name) for c in self.__table__.columns}
+        for k in ("written_at", "updated_at"):
+            d[k] = d[k].isoformat() if d[k] else None
+        d["found"] = json.loads(d["found"]) if d["found"] else None
+        return d
+
+
 def in_library(query, lib: Library | None):
     """Scope a Track query to one library, by path prefix. None = every library."""
     return query.filter(Track.path.startswith(lib.prefix, autoescape=True)) if lib else query
